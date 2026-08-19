@@ -95,6 +95,15 @@ android {
         }
     }
 
+    // AGP writes an "SDK dependency information" blob into the APK signing block
+    // for Play Console, encrypted with a fresh random key every build. It is the
+    // only thing that stops two builds of this APK being byte-identical, and
+    // nothing here ships to Play. Verified with `nix-build --check`.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+
     lint {
         checkReleaseBuilds = false
     }

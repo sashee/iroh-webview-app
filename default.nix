@@ -1,6 +1,21 @@
 let
   pkgs = import ./nixpkgs.nix;
-  src = pkgs.nix-gitignore.gitignoreSource [ ] ./.;
+  # An allowlist, not `gitignoreSource`. Two reasons, both about the build
+  # depending on exactly what it says it depends on: a `.gitignore` filter also
+  # sweeps in *untracked* files, so a stray note left in the working tree
+  # changes the derivation and the same commit stops producing the same APK; and
+  # it drags in the docs, so editing README.md rebuilds an Android app.
+  #
+  # `rust/` is deliberately absent: the Rust half reaches this build as the
+  # `nativeLibs` and `rust` derivations, each with its own source filter.
+  src = pkgs.lib.sourceByRegex ./. [
+    "app(/.*)?"
+    "gradle(/.*)?"
+    "signing(/.*)?"
+    "settings\\.gradle\\.kts"
+    "build\\.gradle\\.kts"
+    "gradle\\.properties"
+  ];
 
   # Kept in one place: the NDK's clang wrappers are named for the API level, so
   # the Rust half has to link against the same minSdk app/build.gradle.kts
