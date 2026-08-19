@@ -1,0 +1,42 @@
+[package]
+name = "iroh-webview-proxy"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Loopback TCP proxy that carries each connection over an iroh endpoint (dumbpipe wire format)"
+
+[dependencies]
+# Mirrors packages/iroh-ssh/Cargo.toml in sashee/nixos-test so both ends of the
+# pipe move together. Unlike that crate we do not enable `platform-verifier`:
+# the relays we talk to have ordinary public certificates, and dropping it
+# removes the Android JNI trust-store plumbing entirely.
+iroh = { version = "1.0", default-features = false, features = ["tls-ring"] }
+iroh-tickets = "1.0"
+n0-error = "1.0"
+noq = "1.0"
+tokio = { version = "1.34", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+tokio-util = "0.7"
+# The facade only. Without a logger installed these compile to nothing, so the
+# host build and its tests are unaffected.
+log = "0.4"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+# Routes `log` to logcat. There is nowhere else for a phone to report to.
+android_logger = "0.15"
+
+[lib]
+name = "iroh_webview_proxy"
+# `cdylib` is what the APK packages and loads; `rlib` is what the host test
+# binaries link against.
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[profile.release]
+# Not `abort`: iroh's Android DNS path relies on unwinding to fall back to
+# public nameservers when no JNI context is installed. See src/lib.rs.
+panic = "unwind"
+
+[dev-dependencies]
+tokio = { version = "1.34", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

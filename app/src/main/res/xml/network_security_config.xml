@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+      The proxy is plain HTTP on loopback, which is correct: the transport
+      security is iroh's, one hop further out, and loopback has no network to
+      eavesdrop on. Cleartext is permitted here and nowhere else, so a page that
+      links to an http:// site elsewhere still cannot load it.
+    -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

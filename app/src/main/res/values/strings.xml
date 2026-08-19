@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">iroh browser</string>
+    <string name="entry_prompt">Paste an iroh ticket</string>
+    <string name="ticket_hint">Ticket or endpoint id</string>
+    <string name="connect">Connect</string>
+    <string name="error_bad_ticket">That is not an iroh ticket or endpoint id.</string>
+    <string name="error_start_failed">Could not start the proxy.</string>
+    <string name="menu_add">Add endpoint</string>
+    <string name="menu_switch">Switch endpoint</string>
+    <string name="menu_remove">Remove this endpoint</string>
+    <string name="menu_reload">Reload</string>
+    <string name="download_started">Downloading %1$s</string>
+    <string name="download_failed">Could not start the download.</string>
+</resources>

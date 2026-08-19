@@ -1,0 +1,7 @@
+target/
+result
+result-*
+.gradle/
+build/
+.gradle-home/
+.kotlin/
