@@ -148,3 +148,29 @@ Paste the two tickets it prints into the app. Each check depends on the one befo
     without an endpoint", and the first endpoint's page stays as it was.
 13. Add a fingerprint in Settings, then sign in. It is refused, and the message says
     adding a fingerprint invalidated the passkey. Creating a new one works.
+
+### Port squatting
+
+`adb shell` can listen on a loopback port just as an app can. These checks use it to play
+an app that grabs a port the proxy has let go. Each endpoint's port is shown in its origin
+on the **Endpoints and passkeys** screen. Use a listener that stays up and logs every
+connection; `nc -l` exits after the first one, sometimes before any bytes arrive:
+
+```sh
+adb shell "rm -f /data/local/tmp/squat.log; setsid toybox nc -L -p <port> \
+  sh -c 'echo == connection >> /data/local/tmp/squat.log; timeout 3 cat >> /data/local/tmp/squat.log' \
+  </dev/null >/dev/null 2>&1 &"
+adb shell cat /data/local/tmp/squat.log
+```
+
+Finish each check with a control, `adb shell "echo probe | toybox nc -w 2 127.0.0.1 <port>"`,
+which must show up in the log. That proves the listener was really there.
+
+14. Open endpoint A, then switch to B. Listen on A's port, and press back in the app until
+    it closes. The log shows nothing but the probe: the history was dropped after the
+    switch, and any request there would be refused anyway.
+15. With B open, send the app to the background and run `adb shell am kill
+    com.example.irohbrowser`. Listen on B's port, then reopen the app from recents. The
+    proxy logs "preferred port … unavailable", the page comes back on another port, and the
+    log shows nothing but the probe. (A build from before this fix delivers `GET /` with
+    the endpoint's cookies to the listener here.)

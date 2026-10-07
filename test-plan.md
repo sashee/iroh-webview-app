@@ -6,7 +6,7 @@ Everything below runs inside `nix-build`, with no network. Three suites:
 
 - **Rust**, `nix-build -A rust` — 48 tests. Unit tests beside each module, plus end-to-end
   transport tests over a real iroh pair on loopback.
-- **Kotlin/Robolectric**, run by the APK build — 204 tests.
+- **Kotlin/Robolectric**, run by the APK build — 222 tests.
 - **The injected passkey script**, `nix-build -A passkeyScript` — 20 tests, in Node.
 
 Excluded on purpose: instrumentation tests, live network against the rpi5, and anything
@@ -130,6 +130,11 @@ The browsing-direction security boundary.
 - external `http`/`https` go to the real browser
 - `intent:`, `file:`, `content:`, `javascript:`, `data:`, `tel:`, `market:` are refused
 - empty and null navigations are refused
+- loopback is every way of naming this device — `localhost` and names under it, 127/8,
+  `0.0.0.0`, `[::1]` and its IPv4-mapped forms — and nothing else
+- the running proxy's origin may be requested at any path; the same host on another port,
+  other loopback origins, and anything loopback while nothing runs may not
+- requests off the device are left alone
 
 ### The activity — `MainActivityBehaviorTest`
 
@@ -156,6 +161,26 @@ Driven through a fake proxy that records call order.
 - an external link opens the real browser, asserted through the started Intent
 - an `intent:` url starts nothing at all
 - navigation is refused while nothing is running
+
+### No requests to a squatted port — `LoopbackGuardTest`
+
+Cookies ignore ports, so a request to the right host on the wrong port hands the session
+to whatever app is listening there.
+
+- requests to the running proxy go through
+- the same host on another port is refused before anything is sent, with a response that
+  is not cached
+- after a switch, the previous endpoint's origin is refused
+- other loopback addresses are refused, and the outside world is not
+- with nothing running, every loopback request is refused
+- service worker requests are checked the same way, and the check is removed with the
+  activity
+- switching drops the history once the new endpoint's page has loaded, and a late callback
+  for the page being left does not count
+- a restored page starts loading only after the proxy runs and the passkey script is in
+  (restored first, its request was refused, which the Pixel showed and Robolectric could not)
+- a restored page is kept when the proxy got its port back, and replaced by the front page
+  — history dropped — when it did not
 
 ### Downloads — `DownloadsTest`
 

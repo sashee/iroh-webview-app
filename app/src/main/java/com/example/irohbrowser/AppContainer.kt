@@ -15,6 +15,7 @@ class AppContainer(
     val store: EndpointStore,
     val proxy: ProxyController,
     val passkeys: PasskeyPlatform,
+    val serviceWorkers: ServiceWorkerRequests,
     /**
      * How to reach the browser's stored site data. A factory rather than a
      * value because the real one needs the activity's WebView, which does not
@@ -46,6 +47,7 @@ class AppContainer(
                     vault = AndroidKeyVault,
                     ui = ::BiometricPasskeyUi,
                 ),
+                serviceWorkers = PlatformServiceWorkerRequests,
             )
     }
 }

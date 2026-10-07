@@ -119,6 +119,18 @@ cookie and is discarded when the process does, whatever the app does.
   the app plants a random token with `CookieManager.setCookie` on the origin, and the proxy
   requires it in the first request head of each connection. That costs inspecting (not
   rewriting) that head, and is deliberately not built until it is needed.
+- **The WebView talks to loopback only at the running proxy's exact origin.** Cookies are
+  keyed by host, not port (RFC 6265), and any app can listen on a loopback port that our
+  proxy isn't holding. Without this rule, two paths would send an endpoint's session to
+  whoever listens there, along with a page on its exact origin that can read its storage:
+  - pressing back into an endpoint whose proxy has stopped;
+  - a restored page whose port the proxy didn't get back.
+
+  `Origins.mayRequest` is checked on every request, in `shouldInterceptRequest` and in the
+  service-worker client, so it holds however a navigation started. The history is dropped
+  after a switch, and a restored page on the wrong port is replaced by the front page.
+  WebSockets don't pass through either hook, but only a page already loaded from the
+  endpoint can open one.
 - **One bridge from page JavaScript into the app, for passkeys only.** It is a
   `WebMessageListener` that the WebView restricts to the running endpoint's exact origin.
   It carries data, not callable methods, and accepts two operations, create and get. Each

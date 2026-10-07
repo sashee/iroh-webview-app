@@ -121,4 +121,74 @@ class OriginsTest {
         assertEquals(Origins.Destination.Refuse, destination(null))
         assertEquals(Origins.Destination.Refuse, destination(""))
     }
+
+    // --- which requests may leave the WebView ---
+
+    private val running = ProxyBinding(label, port)
+
+    @Test
+    fun `loopback is every way of naming this device`() {
+        listOf(
+            "http://localhost/",
+            "http://localhost:8080/x",
+            "http://$label.localhost:1/",
+            "http://anything.else.localhost/",
+            "http://LOCALHOST./",
+            "http://127.0.0.1:41234/",
+            "http://127.1.2.3/",
+            "http://0.0.0.0:41234/",
+            "http://[::1]:41234/",
+            "http://[::ffff:7f00:1]:41234/",
+            "http://[::ffff:127.0.0.1]/",
+            "ws://$label.localhost:1/",
+        ).forEach { assertTrue(it, Origins.isLoopback(it)) }
+    }
+
+    @Test
+    fun `other hosts are not loopback`() {
+        listOf(
+            "https://example.com/",
+            "http://localhost.example.com/",
+            "http://notlocalhost/",
+            "http://127.example.com/",
+            "http://128.0.0.1/",
+            "http://[::2]/",
+            "data:text/plain,hi",
+            "about:blank",
+            "nonsense",
+            null,
+        ).forEach { assertFalse("$it", Origins.isLoopback(it)) }
+    }
+
+    @Test
+    fun `the running proxy's origin may be requested, at any path`() {
+        assertTrue(Origins.mayRequest("http://$label.localhost:$port/", running))
+        assertTrue(Origins.mayRequest("http://$label.localhost:$port/api/x?y=1", running))
+    }
+
+    @Test
+    fun `the same host on another port may not`() {
+        // Cookies ignore ports: this request would carry the session to
+        // whatever app is listening there.
+        assertFalse(Origins.mayRequest("http://$label.localhost:${port + 1}/", running))
+    }
+
+    @Test
+    fun `other loopback origins may not`() {
+        assertFalse(Origins.mayRequest("http://other.localhost:$port/", running))
+        assertFalse(Origins.mayRequest("http://127.0.0.1:$port/", running))
+        assertFalse(Origins.mayRequest("http://[::1]:$port/", running))
+    }
+
+    @Test
+    fun `with no proxy running, nothing loopback may`() {
+        assertFalse(Origins.mayRequest("http://$label.localhost:$port/", null))
+    }
+
+    @Test
+    fun `requests off the device are left alone`() {
+        assertTrue(Origins.mayRequest("https://example.com/font.woff2", running))
+        assertTrue(Origins.mayRequest("https://example.com/", null))
+        assertTrue(Origins.mayRequest(null, running))
+    }
 }

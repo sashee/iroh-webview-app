@@ -21,6 +21,8 @@ import com.example.irohbrowser.ProxyBinding
 import com.example.irohbrowser.ProxyController
 import com.example.irohbrowser.ProxyError
 import com.example.irohbrowser.ProxyResult
+import com.example.irohbrowser.RequestCheck
+import com.example.irohbrowser.ServiceWorkerRequests
 import com.example.irohbrowser.SiteData
 import java.security.KeyPair
 import java.security.KeyPairGenerator
@@ -48,16 +50,28 @@ class FakeProxy : ProxyController {
     /** Ports handed out, so each start is distinguishable from the last. */
     private var nextPort = 40000
 
+    /**
+     * Bind each endpoint's preferred port, as the real proxy does when nothing
+     * else holds it. Off by default, which models the fallback: every start
+     * gets a port no page was saved on.
+     */
+    var bindPreferredPorts = false
+
+    /** Runs as each start begins, so a test can see what had happened by then. */
+    var onStart: () -> Unit = {}
+
     var running: ProxyBinding? = null
         private set
 
     override fun start(ticket: String): ProxyResult {
+        onStart()
         calls += "start:$ticket"
         failures[ticket]?.let {
             running = null
             return ProxyResult.Failed(it)
         }
-        val binding = ProxyBinding(label = labelFor(ticket), port = nextPort++)
+        val port = if (bindPreferredPorts) preferredPortFor(ticket) else nextPort++
+        val binding = ProxyBinding(label = labelFor(ticket), port = port)
         running = binding
         return ProxyResult.Started(binding)
     }
@@ -222,7 +236,11 @@ class FakePasskeyInstaller : PasskeyInstaller {
 
     private var receiver: PasskeyReceiver? = null
 
+    /** Runs as each install begins, so a test can see what had happened by then. */
+    var onInstall: () -> Unit = {}
+
     override fun install(webView: WebView, origin: String, receive: PasskeyReceiver): (() -> Unit)? {
+        onInstall()
         if (!supported) return null
         events += "install:$origin"
         installedOrigin = origin
@@ -260,6 +278,16 @@ class FakePasskeys(context: Context) {
     )
 }
 
+/** Records the check service worker requests are routed through, so a test can apply it. */
+class FakeServiceWorkerRequests : ServiceWorkerRequests {
+    var check: RequestCheck? = null
+        private set
+
+    override fun route(check: RequestCheck?) {
+        this.check = check
+    }
+}
+
 /** Everything a test needs to drive the activity. */
 class TestHarness(
     val proxy: FakeProxy = FakeProxy(),
@@ -272,9 +300,11 @@ class TestHarness(
 
     val passkeys = FakePasskeys(context)
 
+    val serviceWorkers = FakeServiceWorkerRequests()
+
     fun install() {
         store.save(Endpoints())
-        AppContainer.install(AppContainer(store, proxy, passkeys.platform) { siteData })
+        AppContainer.install(AppContainer(store, proxy, passkeys.platform, serviceWorkers) { siteData })
     }
 
     /** Seed the saved endpoints before the activity starts. */

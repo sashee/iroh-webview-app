@@ -91,6 +91,17 @@ not a bug to work around.
 attestation format except "none" without checking it, which once let a test with a broken
 public key pass. `PasskeyAuthenticatorTest` builds its own verifier.
 
+**Cookies ignore ports.** A request to `<label>.localhost` on any port carries that
+endpoint's cookies, and any app can listen on a loopback port our proxy isn't holding. So
+the WebView must never request a loopback origin other than the running proxy's.
+`MainActivity.refusal` (`Origins.mayRequest`) enforces this on every request, service
+workers included. Any new way of making requests needs it too: another client, another
+hook, a restore path. Clearing the history after a switch and replacing a restored page
+on the wrong port keep the UI from walking into a refusal; they are not the protection.
+A restored WebView starts loading at once, on its own thread, so `openSelected` restores
+the state only after the proxy is running and the passkey script is installed. Restoring
+earlier, as `onCreate` once did, gets the restored page refused.
+
 **Every endpoint has an origin, running or not.** `ProxyController.identify` reads it from
 the ticket in Rust, starting nothing. Removing an endpoint that is not on screen depends
 on it: its site data is cleared at its preferred port. The open endpoint uses the running

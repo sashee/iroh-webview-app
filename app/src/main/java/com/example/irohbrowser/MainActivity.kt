@@ -12,6 +12,7 @@ import android.webkit.WebChromeClient
 import android.view.Menu
 import android.view.MenuItem
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
@@ -23,6 +24,7 @@ import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import java.io.ByteArrayInputStream
 
 /**
  * The whole app.
@@ -40,9 +42,24 @@ class MainActivity : AppCompatActivity() {
     private lateinit var entryError: TextView
     private lateinit var siteData: SiteData
 
-    /** The proxy currently running, if any. */
+    /**
+     * The proxy currently running, if any.
+     *
+     * Volatile because the WebView checks every request against it from its
+     * own thread (see [refusal]).
+     */
+    @Volatile
     internal var binding: ProxyBinding? = null
         private set
+
+    /**
+     * Set when an endpoint's front page is being loaded after a switch or a
+     * port change: once it has loaded, the history before it is dropped. That
+     * history leads to origins no proxy is serving any more -- another
+     * endpoint, or this one on a port it no longer holds -- where back would
+     * only find an error, or something else listening.
+     */
+    private var clearHistoryOnceLoaded = false
 
     /** The saved endpoints, as last read or written. */
     internal var endpoints: Endpoints = Endpoints()
@@ -104,10 +121,9 @@ class MainActivity : AppCompatActivity() {
 
         endpoints = container.store.load()
         // A restored WebView state already names a page; re-loading the index
-        // would throw away where the user was. The proxy still has to be
-        // started, because the port it bound last time is gone with the process.
-        savedInstanceState?.let(webView::restoreState)
-        openSelected(loadIndex = savedInstanceState == null)
+        // would throw away where the user was. It is handed to openSelected
+        // rather than restored here: the proxy has to be running first.
+        openSelected(restoring = savedInstanceState)
     }
 
     private fun configureWebView() {
@@ -141,15 +157,33 @@ class MainActivity : AppCompatActivity() {
             useWideViewPort = true
             loadWithOverviewMode = true
         }
-        // Deliberately absent: addJavascriptInterface. There is no bridge from
-        // page JavaScript into the app, and adding one would hand an arbitrary
-        // peer a foothold in a privileged process.
+        // Deliberately absent: addJavascriptInterface. The one way from page
+        // JavaScript into the app is the passkey bridge (offerPasskeys), which
+        // the WebView restricts to the endpoint's origin and which carries
+        // data, not callable methods.
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
                 view: WebView,
                 request: WebResourceRequest,
             ): Boolean = handleNavigation(request.url?.toString())
+
+            // Every request, before it leaves: subresources and fetches, and
+            // also back/forward and restored pages, which never reach
+            // shouldOverrideUrlLoading.
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+                refusal(request.url?.toString())
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                val running = binding ?: return
+                if (clearHistoryOnceLoaded && Origins.isOwnOrigin(url, running.label, running.port)) {
+                    clearHistoryOnceLoaded = false
+                    view.clearHistory()
+                }
+            }
         }
+        // A page's service worker fetches through its own client, not the
+        // WebViewClient. The route is process-wide; onDestroy removes it.
+        container.serviceWorkers.route(::refusal)
         // Without this a download link does nothing at all -- no error, no file.
         webView.setDownloadListener { url, _, contentDisposition, mimeType, _ ->
             startDownload(url, contentDisposition, mimeType)
@@ -281,6 +315,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * Null to let a request to [url] through; a refusal when it is loopback
+     * but not the running proxy's origin -- where the endpoint's cookies would
+     * go to whatever else is listening. See [Origins.mayRequest].
+     */
+    private fun refusal(url: String?): WebResourceResponse? =
+        if (Origins.mayRequest(url, binding)) {
+            null
+        } else {
+            WebResourceResponse(
+                "text/plain",
+                "utf-8",
+                403,
+                "Forbidden",
+                mapOf("Cache-Control" to "no-store"),
+                ByteArrayInputStream("Refused: not the origin of the endpoint on screen.".toByteArray()),
+            )
+        }
+
+    /**
      * Point the browser at the selected endpoint.
      *
      * Nothing is cleared here. Each endpoint has its own `<label>.localhost`
@@ -288,8 +341,18 @@ class MainActivity : AppCompatActivity() {
      * is expected to survive both switching away and closing the app — the
      * clearing that used to happen here ran on every launch too, which is what
      * made a relaunch ask for the password again.
+     *
+     * [restoring] is the saved state of a WebView being brought back after the
+     * process was killed. It is restored only once the proxy is running and
+     * the passkey script installed: the WebView starts loading the restored
+     * page at once, on its own thread, and that request is checked against
+     * [binding] -- restored earlier, it was refused. The restored page is then
+     * kept only when it is on the origin this proxy now serves: if the proxy
+     * had to fall back from the port the page was saved on -- quite possibly
+     * because something else is holding that port -- the page and its history
+     * would lead there.
      */
-    private fun openSelected(loadIndex: Boolean = true) {
+    private fun openSelected(restoring: Bundle? = null) {
         container.proxy.stop()
         binding = null
         withdrawPasskeys()
@@ -307,7 +370,11 @@ class MainActivity : AppCompatActivity() {
                 // start after this, and the first page should have it.
                 offerPasskeys(result.binding)
                 showWebView()
-                if (loadIndex) {
+                val restoredPage = restoring?.let(webView::restoreState)?.currentItem?.url
+                val keepRestored = restoredPage != null &&
+                    Origins.isOwnOrigin(restoredPage, result.binding.label, result.binding.port)
+                if (!keepRestored) {
+                    clearHistoryOnceLoaded = true
                     webView.loadUrl(Origins.url(result.binding.label, result.binding.port))
                 }
             }
@@ -486,6 +553,7 @@ class MainActivity : AppCompatActivity() {
         pendingFileChooser?.onReceiveValue(null)
         pendingFileChooser = null
         withdrawPasskeys()
+        container.serviceWorkers.route(null)
         // Not in onPause: the proxy has to survive the screen going off, or
         // coming back would need a fresh dial for every connection.
         if (isFinishing) container.proxy.stop()
