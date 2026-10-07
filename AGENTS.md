@@ -118,6 +118,11 @@ prompt; before the prompt it throws. `FakeKeyVault` enforces this too. The PRF r
 from a per-passkey secret, derived from `WebAuthn.PRF_SECRET_MESSAGE`. Never change that
 string: every key a site has derived from a result would change with it.
 
+**To put a local service behind iroh for testing, use `iroh-uds-listen`** from
+sashee/nixos-test's `packages/iroh-ssh`, the same far side the monitoring platform has.
+nixpkgs' `dumbpipe` speaks the same wire format, but the pinned one is built on iroh 0.35,
+which the app's iroh 1.0 cannot reach.
+
 **Release must keep `panic = "unwind"`.** iroh's Android DNS path relies on unwinding to
 fall back to public nameservers when no JNI context is installed. `abort` turns that
 fallback into a crash.
@@ -205,13 +210,11 @@ detail, so logcat is the only place the reason exists.
 - The Robolectric suite cannot reach `*.localhost` resolution or real cookie behaviour.
   Those are the on-device checks in README.md, and they are the ones to run after touching
   the WebView or endpoint switching.
-- Passkeys are tested at four levels:
+- Passkeys are tested at three levels:
   - **`PasskeyAuthenticatorTest`**: whole ceremonies with software keys, verified by
     webauthn4j acting as the server.
   - **`app/src/test/js/passkeys.test.mjs`** (Node, `nix-build -A passkeyScript`): the
     injected script against a fake bridge.
-  - **`passkey-demo/`** (outside the gate): the script in real Chromium against a
-    py_webauthn server.
   - **On the device** (README.md): the Keystore, BiometricPrompt and the WebView's bridge.
 
 ## Style

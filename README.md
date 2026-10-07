@@ -125,16 +125,13 @@ isolation moves entirely onto the clear-on-switch behaviour that is already ther
 
 ### Passkeys
 
-These need `passkey-demo/` behind two tunnels, i.e. two endpoints serving the same demo:
-
-```sh
-nix-shell passkey-demo --run 'passkey-demo/over-iroh.sh .trial/state'
-```
-
-Paste the two tickets it prints into the app. Each check depends on the one before it.
+These need a passkey-capable web app behind two endpoints: two `iroh-uds-listen` listeners,
+each with its own key, in front of the same service. The service must leave the RP ID out
+and check each passkey against the origin it was registered from (DESIGN.md, Passkeys).
+Each check depends on the one before it.
 
 7. Create an account on the first endpoint. The fingerprint prompt names that endpoint and
-   the account. The demo's log line shows `http://<label>.localhost:<port>` as the origin.
+   the account. The server sees `http://<label>.localhost:<port>` as the origin.
 8. Sign out, then sign in with a passkey: one fingerprint, no username typed.
 9. Start a sign-in and cancel the prompt. The page reports `NotAllowedError` and still
    works.
@@ -146,9 +143,10 @@ Paste the two tickets it prints into the app. Each check depends on the one befo
 12. Open **Endpoints and passkeys**. Each endpoint lists its own passkey, "in the
     StrongBox security chip · with PRF". Remove the second endpoint: its passkey moves to
     "Passkeys without an endpoint", and the first endpoint's page stays as it was.
-13. PRF: on the first endpoint, unlock the encrypted note (one fingerprint), write
-    something and save it. The demo shows the server holding only ciphertext. Reload the
-    page: the note is locked again. Unlock it (one fingerprint): the text is back.
+13. PRF: on the first endpoint, have the site derive a key from a PRF result (one
+    fingerprint) and store something encrypted. The server holds only ciphertext. Reload
+    the page, so the key is gone, and derive it again (one fingerprint): the data
+    decrypts.
 14. Add a fingerprint in Settings, then sign in. It is refused, and the message says
     adding a fingerprint invalidated the passkey. Creating a new one works.
 

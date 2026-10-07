@@ -12,10 +12,6 @@ Everything below runs inside `nix-build`, with no network. Three suites:
 Excluded on purpose: instrumentation tests, live network against the rpi5, and anything
 that needs a real Chromium. Those are the on-device checks in [README.md](README.md).
 
-Outside the gate, `passkey-demo/` has its own suites (60 unit tests and two Chromium
-checks), described in its README. They test the demo server and run the injected script in
-real Chromium.
-
 ## Rust
 
 ### Ticket parsing and origins — `src/ticket.rs`
@@ -418,6 +414,6 @@ In Node, against a fake bridge and a fake `navigator`.
   is kept thin for that reason. The passkey checks in README.md cover it.
 - **The script and the app** are tested apart and meet first on the phone. The JSON
   between them is pinned on both sides: the app's output by webauthn4j, the script's
-  handling of it by Node and by `passkey-demo/check_injected_script.py`.
+  handling of it by Node.
 - **Relay versus direct path** is unmeasured. If hole-punching between phone and rpi5
   fails, everything relays through public relays, which are rate-limited.

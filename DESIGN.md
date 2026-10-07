@@ -236,7 +236,6 @@ tunnel's endpoint id, which a web app behind the tunnel does not know. So the se
 - accepts registrations only from `http://localhost` and `http://*.localhost`. Those always
   resolve to the device the browser runs on, so no remote site can phish a registration.
 
-`passkey-demo/` is such a server, and is what the on-device checks use.
 
 **What the bridge exposes.** A page from an arbitrary peer can do two things: raise a
 fingerprint prompt, and, with the user's finger, create or use a passkey for its own host.
@@ -291,8 +290,7 @@ rather than two.
    only sets the variables that `nix/native-libs.nix` sets directly.
 3. **`-A passkeyScript`** — the injected passkey script's tests, in Node against a fake
    bridge. Robolectric's WebView runs no JavaScript, so this is the only off-device run of
-   the script inside the gate. (`passkey-demo/check_injected_script.py` runs it in real
-   Chromium, outside the gate.)
+   the script inside the gate.
 4. **the APK** — Gradle resolving from a vendored Maven repository built by
    `buildGradleApplication`'s `mkM2Repository`, running the Robolectric suite and signing
    with the committed keystore.
