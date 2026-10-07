@@ -84,7 +84,11 @@ class SettingsScreen(private val content: LinearLayout, private val actions: Set
         } else {
             passkey.account
         }
-        val details = context.getString(R.string.passkey_details, created, storage(passkey.storage))
+        val details = context.getString(
+            if (passkey.prf) R.string.passkey_details_prf else R.string.passkey_details,
+            created,
+            storage(passkey.storage),
+        )
         addView(
             vertical().apply {
                 addView(body(heading))

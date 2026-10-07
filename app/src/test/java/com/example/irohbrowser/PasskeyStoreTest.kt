@@ -3,6 +3,8 @@ package com.example.irohbrowser
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -41,5 +43,27 @@ class PasskeyStoreTest {
     fun `unreadable entries are skipped and the rest kept`() {
         val text = """[{"rpId": "x"}, ${StoredPasskey.listToJson(listOf(alice)).removeSurrounding("[", "]")}, 5]"""
         assertEquals(listOf(alice), StoredPasskey.listFromJson(text))
+    }
+
+    @Test
+    fun `whether a passkey has PRF is kept, and old entries have none`() {
+        store().update { it + alice.copy(prf = true) }
+        assertTrue(store().load().single().prf)
+        val old = """[{"credentialId": "aWQ", "rpId": "r", "userHandle": "h", "userName": "u", "userDisplayName": "U", "created": 1}]"""
+        assertFalse(StoredPasskey.listFromJson(old).single().prf)
+    }
+
+    @Test
+    fun `forgetting a passkey deletes both of its keys`() {
+        val vault = com.example.irohbrowser.testing.FakeKeyVault()
+        vault.create(alice.alias)
+        vault.createPrf(alice.prfAlias)
+        store().update { it + alice.copy(prf = true) }
+
+        store().forget(alice.credentialId, vault)
+
+        assertTrue(store().load().isEmpty())
+        assertTrue(vault.keys.isEmpty())
+        assertTrue(vault.prfKeys.isEmpty())
     }
 }

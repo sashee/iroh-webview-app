@@ -19,11 +19,19 @@ data class StoredPasskey(
     val userName: String,
     val userDisplayName: String,
     val created: Long,
+    /**
+     * Whether it has a PRF key beside its signing key. Decided at
+     * registration, by whether the site asked for PRF, and fixed after: a
+     * Keystore key's rules cannot be changed once it exists.
+     */
+    val prf: Boolean = false,
 ) {
     val alias: String get() = aliasFor(credentialId)
+    val prfAlias: String get() = prfAliasFor(credentialId)
 
     companion object {
         fun aliasFor(credentialId: String): String = "passkey:$credentialId"
+        fun prfAliasFor(credentialId: String): String = "prf:$credentialId"
 
         fun listToJson(passkeys: List<StoredPasskey>): String =
             JSONArray(
@@ -35,6 +43,7 @@ data class StoredPasskey(
                         .put("userName", it.userName)
                         .put("userDisplayName", it.userDisplayName)
                         .put("created", it.created)
+                        .put("prf", it.prf)
                 },
             ).toString()
 
@@ -55,6 +64,7 @@ data class StoredPasskey(
                     userName = entry.text("userName").orEmpty(),
                     userDisplayName = entry.text("userDisplayName").orEmpty(),
                     created = entry.optLong("created"),
+                    prf = entry.optBoolean("prf"),
                 )
             }
         }
@@ -71,12 +81,13 @@ class PasskeyStore(private val prefs: SharedPreferences) {
         change(load()).also { prefs.edit().putString(KEY, StoredPasskey.listToJson(it)).apply() }
 
     /**
-     * Forget a passkey: the record here, and the key in [vault]. The server's
+     * Forget a passkey: the record here, and its keys in [vault]. The server's
      * copy of the public key stays, and can never be used again.
      */
     fun forget(credentialId: String, vault: KeyVault) {
         update { stored -> stored.filterNot { it.credentialId == credentialId } }
         vault.delete(StoredPasskey.aliasFor(credentialId))
+        vault.delete(StoredPasskey.prfAliasFor(credentialId))
     }
 
     companion object {

@@ -141,4 +141,67 @@ class PasskeyRequestsTest {
         assertFalse(PasskeyRequests.alreadyRegistered(stored, "alpha.localhost", listOf("b1")))
         assertFalse(PasskeyRequests.alreadyRegistered(stored, "alpha.localhost", emptyList()))
     }
+
+    // --- PRF ---
+
+    @Test
+    fun `a registration asking for PRF says so`() {
+        assertTrue(PasskeyRequests.parseCreate(creation { getJSONObject("extensions").put("prf", true) }).value().prf)
+        assertFalse(PasskeyRequests.parseCreate(creation()).value().prf)
+    }
+
+    private fun get(json: String) = PasskeyRequests.parseGet(JSONObject(json))
+
+    @Test
+    fun `PRF inputs are read, both of them`() {
+        val prf = get("""{"challenge": "AQ", "extensions": {"prf": {"eval": {"first": "AQI", "second": "AwQ"}}}}""").value().prf!!
+        assertArrayEquals(byteArrayOf(1, 2), prf.eval!!.first)
+        assertArrayEquals(byteArrayOf(3, 4), prf.eval!!.second)
+    }
+
+    @Test
+    fun `no PRF extension means no PRF request`() {
+        assertNull(get("""{"challenge": "AQ"}""").value().prf)
+    }
+
+    @Test
+    fun `per-passkey inputs are keyed by the canonical credential id`() {
+        val prf = get(
+            """{"challenge": "AQ", "allowCredentials": [{"type": "public-key", "id": "qrs"}],
+                "extensions": {"prf": {"evalByCredential": {"qrs=": {"first": "AQ"}}}}}""",
+        ).value().prf!!
+        assertArrayEquals(byteArrayOf(1), prf.inputsFor("qrs")!!.first)
+        assertNull(prf.eval)
+    }
+
+    @Test
+    fun `per-passkey inputs without an allow list are not supported`() {
+        // The specification's rule: there is nothing to key them against.
+        val outcome = get("""{"challenge": "AQ", "extensions": {"prf": {"evalByCredential": {"qrs": {"first": "AQ"}}}}}""")
+        assertEquals("NotSupportedError", outcome.errorName())
+    }
+
+    @Test
+    fun `per-passkey inputs for a passkey not on the allow list are a SyntaxError`() {
+        val outcome = get(
+            """{"challenge": "AQ", "allowCredentials": [{"type": "public-key", "id": "qrs"}],
+                "extensions": {"prf": {"evalByCredential": {"AQ": {"first": "AQ"}}}}}""",
+        )
+        assertEquals("SyntaxError", outcome.errorName())
+    }
+
+    @Test
+    fun `a per-passkey key that is not base64url is a SyntaxError`() {
+        val outcome = get(
+            """{"challenge": "AQ", "allowCredentials": [{"type": "public-key", "id": "qrs"}],
+                "extensions": {"prf": {"evalByCredential": {"not an id!": {"first": "AQ"}}}}}""",
+        )
+        assertEquals("SyntaxError", outcome.errorName())
+    }
+
+    @Test
+    fun `PRF inputs without a first are a TypeError`() {
+        assertEquals("TypeError", get("""{"challenge": "AQ", "extensions": {"prf": {"eval": {"second": "AQ"}}}}""").errorName())
+        assertEquals("TypeError", get("""{"challenge": "AQ", "extensions": {"prf": {"eval": {"first": "not base64!"}}}}""").errorName())
+    }
 }

@@ -186,7 +186,7 @@ plays both parts that a browser and its platform would:
 - **The authenticator** is `PasskeyAuthenticator` plus an Android Keystore key.
   - The key is P-256, in StrongBox (the Titan M2) where there is one.
   - Every single signature needs a strong biometric or the screen lock; there is no
-    "unlocked for 30 seconds" window.
+    "unlocked for 30 seconds" window. The one exception is below, under PRF.
   - Registration signs too, so the user-verified flag is earned, not claimed.
   - Attestation is `none`, or `packed` self attestation if the server asks for more. The
     AAGUID is zero and the signature counter stays at zero.
@@ -194,6 +194,38 @@ plays both parts that a browser and its platform would:
 Every refusal that needs no user (wrong RP ID, unsupported algorithm, no passkey for this
 site, already registered) happens before the prompt. A page cannot make the phone ask for
 a fingerprint on behalf of a request that was going to fail anyway.
+
+**PRF: keys a site derives, which never leave the phone.** The WebAuthn PRF extension lets
+a site ask a passkey for a secret that depends only on the passkey and an input the site
+chooses. A site uses it to derive encryption keys in the page, so the data it stores is
+ciphertext it cannot read. The app implements the whole extension:
+
+- `prf.enabled` at registration;
+- `eval` (`first`, and `second` for rotation) and `evalByCredential` at sign-in, held to
+  the specification's rules about the allow list;
+- `extension:prf` in `getClientCapabilities()`.
+
+Results are given at sign-in only, as many authenticators do.
+
+Asking for PRF at registration is what gets a passkey a second key: an HMAC key in
+StrongBox that needs a touch for every operation. The phone ties each touch to exactly one
+hardware operation, and a sign-in should be one touch, so:
+- the touch goes to the PRF key, for one HMAC that derives the passkey's PRF secret;
+- the signing key of such a passkey accepts that touch for 5 seconds and signs straight
+  after;
+- the results are HMAC-SHA-256 of SHA-256("WebAuthn PRF" ‖ 0x00 ‖ input) under that
+  secret, which is exactly CTAP's hmac-secret, and the secret is wiped.
+
+However many inputs a sign-in asks about, it is one touch, and every evaluation needs one.
+Passkeys registered without PRF keep a single, strictly per-touch key. The message the
+secret is derived from is fixed for good, since changing it would change every result a
+site has derived a key from.
+
+Adding a fingerprint invalidates the PRF key but, as Android does for windowed keys, not
+the signing key. A passkey left half-working would only fail later, so the app forgets the
+whole passkey, as it does when a signing key is invalidated. Recovering encrypted data
+after that is the site's design: wrap the data key under the PRF-derived key and under
+something else.
 
 **What the server must do.** The RP ID is `<label>.localhost`, and the label comes from the
 tunnel's endpoint id, which a web app behind the tunnel does not know. So the server:
@@ -221,7 +253,7 @@ in the WebView, not on the loopback port.
 - ES256 only.
 - No conditional mediation (autofill-style sign-in): sites are told so and show a button
   instead.
-- No extensions beyond `credProps`.
+- No extensions beyond `credProps` and `prf`.
 - One ceremony at a time.
 - Removing an endpoint keeps its passkeys. The server still trusts them, and re-adding the
   endpoint (same id, same host) makes them usable again. Until then the "Endpoints and

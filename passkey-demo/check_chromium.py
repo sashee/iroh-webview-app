@@ -13,6 +13,7 @@ registration and login -- which the app's proxy can cause -- is covered too.
     nix-shell passkey-demo --run 'python passkey-demo/check_chromium.py'
 """
 
+import base64
 import shutil
 import sys
 import threading
@@ -71,6 +72,7 @@ def main() -> int:
                     "hasUserVerification": True,
                     "isUserVerified": True,
                     "automaticPresenceSimulation": True,
+                    "hasPrf": True,
                 }
             },
         )["authenticatorId"]
@@ -88,7 +90,7 @@ def main() -> int:
             check("*.localhost is a secure context", page.evaluate("window.isSecureContext"))
 
             result = call("register", "alice")
-            check("alice registers on alpha", result.get("ok") == {"user": "alice"}, result)
+            check("alice registers on alpha, with PRF", result.get("ok") == {"user": "alice", "prf": True}, result)
             [passkey] = call("whoami")["ok"]["passkeys"]
             check(
                 "the server recorded alpha as the passkey's site",
@@ -125,7 +127,7 @@ def main() -> int:
             )
 
             result = call("register", "bob")
-            check("bob registers on beta", result.get("ok") == {"user": "bob"}, result)
+            check("bob registers on beta", result.get("ok", {}).get("user") == "bob", result)
             call("signOut")
             result = call("signIn")
             check("beta signs in as bob, not alice", result.get("ok") == {"user": "bob"}, result)
@@ -134,6 +136,20 @@ def main() -> int:
             call("signOut")
             result = call("signIn")
             check("alpha still signs in as alice", result.get("ok") == {"user": "alice"}, result)
+
+            # --- PRF: a note the server cannot read ---
+            result = call("unlockNote")
+            check("the note unlocks with a PRF result, empty at first", result.get("ok") == "", result)
+            result = call("saveNote", "the secret plan")
+            check("the note is encrypted and saved", result.get("ok") == {"saved": True}, result)
+            stored = page.evaluate("fetch('/api/note').then(r => r.json())")["note"]
+            ciphertext = base64.urlsafe_b64decode(stored["ciphertext"] + "==")
+            check("the server holds only ciphertext", b"secret" not in ciphertext and len(ciphertext) > 16, stored)
+            page.reload()
+            result = call("readNote")
+            check("after a reload the key is gone", "unlock first" in str(result.get("message")), result)
+            result = call("unlockNote")
+            check("the same passkey unlocks the same note", result.get("ok") == "the secret plan", result)
         finally:
             browser.close()
 

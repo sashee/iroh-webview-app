@@ -8,7 +8,8 @@
   body { font: 16px/1.4 system-ui, sans-serif; margin: 0 auto; max-width: 36rem; padding: 1rem; }
   h1 { font-size: 1.3rem; margin: 0 0 1rem; }
   section { border: 1px solid #ccc; border-radius: .5rem; padding: .75rem 1rem; margin-bottom: 1rem; }
-  button, input { font: inherit; padding: .6rem .9rem; border-radius: .4rem; }
+  button, input, textarea { font: inherit; padding: .6rem .9rem; border-radius: .4rem; }
+  textarea { width: 100%; box-sizing: border-box; border: 1px solid #999; margin: .5rem 0; }
   button { border: 1px solid #555; background: #f2f2f2; margin: .25rem .25rem .25rem 0; }
   input { border: 1px solid #999; width: 100%; box-sizing: border-box; margin-bottom: .5rem; }
   code, pre { font-size: .85rem; overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -33,6 +34,16 @@
   <label for="username" id="register-label">New account</label>
   <input id="username" autocomplete="username webauthn" placeholder="username">
   <button id="register">Create a passkey</button>
+</section>
+
+<section id="note-section" hidden>
+  <strong>Encrypted note</strong>
+  <div id="note-status">Locked. Unlocking signs in with a passkey and asks it for a PRF result.</div>
+  <button id="note-unlock">Unlock with a passkey</button>
+  <textarea id="note-text" rows="5" disabled placeholder="Unlock to read and write"></textarea>
+  <button id="note-save" disabled>Encrypt and save</button>
+  <div><small>What the server stores:</small></div>
+  <pre id="note-stored">nothing yet</pre>
 </section>
 
 <section id="passkeys-section" hidden>
@@ -132,8 +143,12 @@ function authenticationJSON(credential) {
 
 async function register(username) {
   const options = await call("POST", "/api/register/options", { username });
-  const credential = await navigator.credentials.create({ publicKey: creationOptions(options) });
-  return call("POST", "/api/register/verify", registrationJSON(credential));
+  // Asking for PRF here is what gets a passkey that can derive keys later.
+  const publicKey = { ...creationOptions(options), extensions: { prf: {} } };
+  const credential = await navigator.credentials.create({ publicKey });
+  const prf = credential.getClientExtensionResults().prf;
+  const result = await call("POST", "/api/register/verify", registrationJSON(credential));
+  return { ...result, prf: Boolean(prf && prf.enabled) };
 }
 
 async function signIn() {
@@ -145,8 +160,61 @@ async function signIn() {
 const signOut = () => call("POST", "/api/logout", {});
 const whoami = () => call("GET", "/api/me");
 
-// For check_chromium.py, which drives the same functions the buttons do.
-window.passkeyDemo = { register, signIn, signOut, whoami };
+// --- the encrypted note ---
+//
+// The key exists only in this page's memory: derived from the passkey's PRF
+// result with HKDF, non-extractable, gone on reload. The server gets
+// ciphertext and the id of the passkey whose key made it.
+
+const NOTE_SALT = new TextEncoder().encode("passkey-demo note v1");
+let noteKey = null; // { credential, key }
+
+async function deriveNoteKey(secret) {
+  const material = await crypto.subtle.importKey("raw", secret, "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: new TextEncoder().encode("note") },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+async function unlockNote() {
+  const options = await call("POST", "/api/login/options", {});
+  const publicKey = { ...requestOptions(options), extensions: { prf: { eval: { first: NOTE_SALT } } } };
+  const credential = await navigator.credentials.get({ publicKey });
+  const prf = credential.getClientExtensionResults().prf;
+  const secret = prf && prf.results && prf.results.first;
+  if (!secret) throw new Error("this passkey cannot derive keys (no PRF)");
+  await call("POST", "/api/login/verify", authenticationJSON(credential));
+  noteKey = { credential: credential.id, key: await deriveNoteKey(secret) };
+  return readNote();
+}
+
+async function readNote() {
+  if (!noteKey) throw new Error("unlock first");
+  const { note } = await call("GET", "/api/note");
+  if (!note) return "";
+  if (note.credential !== noteKey.credential) throw new Error("this note was encrypted with another passkey");
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: b64url.decode(note.iv) },
+    noteKey.key,
+    b64url.decode(note.ciphertext),
+  );
+  return new TextDecoder().decode(plain);
+}
+
+async function saveNote(text) {
+  if (!noteKey) throw new Error("unlock first");
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, noteKey.key, new TextEncoder().encode(text));
+  return call("POST", "/api/note", { credential: noteKey.credential, iv: b64url.encode(iv), ciphertext: b64url.encode(ciphertext) });
+}
+
+// For check_chromium.py and check_injected_script.py, which drive the same
+// functions the buttons do.
+window.passkeyDemo = { register, signIn, signOut, whoami, unlockNote, readNote, saveNote };
 
 const $ = (id) => document.getElementById(id);
 
@@ -172,6 +240,11 @@ async function refresh() {
   if (user) $("username").value = user;
   $("username").readOnly = !!user;
   $("passkeys-section").hidden = !user;
+  $("note-section").hidden = !user;
+  if (user) {
+    const { note } = await call("GET", "/api/note");
+    $("note-stored").textContent = note ? JSON.stringify(note, null, 1) : "nothing yet";
+  }
   $("passkeys").textContent = passkeys
     .map((p) => [
       `${p.id.slice(0, 16)}…`,
@@ -185,7 +258,9 @@ async function refresh() {
 async function action(label, run) {
   try {
     const result = await run();
-    log(`${label}: ok${result && result.user ? ` (${result.user})` : ""}`, "ok");
+    const who = result && result.user ? ` (${result.user})` : "";
+    const prf = result && "prf" in result ? `, PRF ${result.prf ? "enabled" : "not available"}` : "";
+    log(`${label}: ok${who}${prf}`, "ok");
   } catch (error) {
     log(`${label} failed -- ${describe(error)}`, "err");
   }
@@ -193,6 +268,13 @@ async function action(label, run) {
 }
 
 $("sign-in").onclick = () => action("sign in", signIn);
+$("note-unlock").onclick = () => action("unlock note", async () => {
+  $("note-text").value = await unlockNote();
+  $("note-text").disabled = false;
+  $("note-save").disabled = false;
+  $("note-status").textContent = `Unlocked with passkey ${noteKey.credential.slice(0, 12)}…, in this page only.`;
+});
+$("note-save").onclick = () => action("save note", () => saveNote($("note-text").value));
 $("sign-out").onclick = () => action("sign out", signOut);
 $("register").onclick = () => action("create passkey", () => register($("username").value));
 

@@ -23,6 +23,7 @@ on the phone.
     nix-shell passkey-demo --run 'python passkey-demo/check_injected_script.py'
 """
 
+import base64
 import json
 import shutil
 import sys
@@ -135,13 +136,27 @@ def main() -> int:
             check("PublicKeyCredential is the script's", capabilities.get("extension:credProps") is True, capabilities)
 
             result = call("register", "alice")
-            check("alice registers through the bridge", result.get("ok") == {"user": "alice"}, result)
+            check("alice registers through the bridge, with PRF", result.get("ok") == {"user": "alice", "prf": True}, result)
             [passkey] = call("whoami")["ok"]["passkeys"]
             check("the server saw the page's origin", passkey["site"] == "http://alpha.localhost", passkey)
 
             call("signOut")
             result = call("signIn")
             check("alice signs in through the bridge", result.get("ok") == {"user": "alice"}, result)
+
+            # --- PRF: a note the server cannot read ---
+            result = call("unlockNote")
+            check("the note unlocks with a PRF result, empty at first", result.get("ok") == "", result)
+            result = call("saveNote", "the secret plan")
+            check("the note is encrypted and saved", result.get("ok") == {"saved": True}, result)
+            stored = page.evaluate("fetch('/api/note').then(r => r.json())")["note"]
+            ciphertext = base64.urlsafe_b64decode(stored["ciphertext"] + "==")
+            check("the server holds only ciphertext", b"secret" not in ciphertext and len(ciphertext) > 16, stored)
+            page.reload()
+            result = call("readNote")
+            check("after a reload the key is gone", "unlock first" in str(result.get("message")), result)
+            result = call("unlockNote")
+            check("the same passkey unlocks the same note", result.get("ok") == "the secret plan", result)
 
             shapes = page.evaluate(
                 """async () => {

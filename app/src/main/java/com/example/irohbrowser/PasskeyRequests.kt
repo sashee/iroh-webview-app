@@ -23,6 +23,7 @@ data class PasskeyError(val name: String, val message: String) {
         fun notSupported(message: String) = PasskeyError("NotSupportedError", message)
         fun invalidState(message: String) = PasskeyError("InvalidStateError", message)
         fun type(message: String) = PasskeyError("TypeError", message)
+        fun syntax(message: String) = PasskeyError("SyntaxError", message)
         fun unknown(message: String) = PasskeyError("UnknownError", message)
     }
 }
@@ -45,13 +46,27 @@ class CreateRequest(
     val excludeCredentials: List<String>,
     val attestation: String,
     val credProps: Boolean,
+    /** Whether the site asked for the PRF extension, and so for a PRF key. */
+    val prf: Boolean = false,
 )
+
+/** The two inputs a PRF request can carry. The second is how a site rotates keys. */
+class PrfInputs(val first: ByteArray, val second: ByteArray?)
+
+/**
+ * The PRF extension of a sign-in: inputs for whichever passkey is used, and
+ * per-passkey inputs that take precedence over them.
+ */
+class PrfRequest(val eval: PrfInputs?, val byCredential: Map<String, PrfInputs>) {
+    fun inputsFor(credentialId: String): PrfInputs? = byCredential[credentialId] ?: eval
+}
 
 /** `navigator.credentials.get`, as the injected script relays it. */
 class GetRequest(
     val rpId: String?,
     val challenge: ByteArray,
     val allowCredentials: List<String>,
+    val prf: PrfRequest? = null,
 )
 
 /**
@@ -89,6 +104,7 @@ object PasskeyRequests {
                 excludeCredentials = credentialIds(options.optJSONArray("excludeCredentials")),
                 attestation = options.text("attestation") ?: "none",
                 credProps = options.optJSONObject("extensions")?.optBoolean("credProps") == true,
+                prf = options.optJSONObject("extensions")?.optBoolean("prf") == true,
             ),
         )
     }
@@ -96,13 +112,52 @@ object PasskeyRequests {
     fun parseGet(options: JSONObject?): Outcome<GetRequest> {
         options ?: return typeError("publicKey options are required")
         val challenge = options.bytes("challenge") ?: return typeError("challenge is required")
+        val allowed = credentialIds(options.optJSONArray("allowCredentials"))
+        val prf = when (val parsed = parsePrf(options.optJSONObject("extensions")?.optJSONObject("prf"), allowed)) {
+            is Outcome.Ok -> parsed.value
+            is Outcome.Failed -> return parsed
+        }
         return Outcome.Ok(
             GetRequest(
                 rpId = options.text("rpId"),
                 challenge = challenge,
-                allowCredentials = credentialIds(options.optJSONArray("allowCredentials")),
+                allowCredentials = allowed,
+                prf = prf,
             ),
         )
+    }
+
+    /**
+     * The PRF extension's inputs, held to the rules the specification gives
+     * the browser: per-passkey inputs only alongside an allow list, and only
+     * for passkeys on it.
+     */
+    private fun parsePrf(prf: JSONObject?, allowed: List<String>): Outcome<PrfRequest?> {
+        prf ?: return Outcome.Ok(null)
+        val eval = prf.optJSONObject("eval")?.let {
+            prfInputs(it) ?: return typeError("prf.eval needs a base64url \"first\"")
+        }
+        val byCredentialJson = prf.optJSONObject("evalByCredential") ?: JSONObject()
+        val byCredential = byCredentialJson.keys().asSequence().toList().associate { key ->
+            val id = key.takeIf { it.isNotEmpty() }?.let(WebAuthn::fromBase64Url)?.let(WebAuthn::base64Url)
+                ?: return Outcome.Failed(PasskeyError.syntax("prf.evalByCredential has a key that is not a credential id"))
+            val inputs = byCredentialJson.optJSONObject(key)?.let(::prfInputs)
+                ?: return typeError("prf.evalByCredential values need a base64url \"first\"")
+            id to inputs
+        }
+        if (byCredential.isNotEmpty() && allowed.isEmpty()) {
+            return Outcome.Failed(PasskeyError.notSupported("prf.evalByCredential needs allowCredentials."))
+        }
+        if (byCredential.keys.any { it !in allowed }) {
+            return Outcome.Failed(PasskeyError.syntax("prf.evalByCredential names a passkey not in allowCredentials."))
+        }
+        return Outcome.Ok(PrfRequest(eval, byCredential))
+    }
+
+    private fun prfInputs(json: JSONObject): PrfInputs? {
+        val first = json.bytes("first") ?: return null
+        val second = if (json.isNull("second")) null else json.bytes("second") ?: return null
+        return PrfInputs(first, second)
     }
 
     /**

@@ -22,6 +22,12 @@ Trusting the client's origin at registration is acceptable because of two rules:
 Sign-up is open, which a real service would not do: anyone can create an
 account. Adding a passkey to an existing account needs a session as it.
 
+Each account can keep one note the server cannot read. The page encrypts it
+with a key derived from the passkey's PRF result, in WebCrypto, and the
+server stores what it is given: ciphertext, a nonce, and which passkey's key
+it was made under. There is no recovery: a note is readable with the passkey
+that wrote it and nothing else, which is a real service's job to improve on.
+
 Structure: `handle` is a pure function of (state, request, world) returning the
 new state and a response. Everything that touches the world -- the clock, the
 random source, sockets, the state file -- is in the `serve` half at the bottom.
@@ -30,6 +36,7 @@ random source, sockets, the state file -- is in the `serve` half at the bottom.
 import argparse
 import dataclasses
 import json
+import re
 import secrets
 import socketserver
 import sys
@@ -138,11 +145,22 @@ class Session:
 
 
 @dataclass(frozen=True)
+class Note:
+    """An encrypted note, exactly as the page sent it. The server never sees a key."""
+
+    credential: str  # which passkey's PRF result the key came from
+    iv: str  # base64url
+    ciphertext: str  # base64url
+    updated: float
+
+
+@dataclass(frozen=True)
 class State:
     users: Mapping[str, str] = field(default_factory=dict)  # name -> user handle
     passkeys: Mapping[str, Passkey] = field(default_factory=dict)  # credential id -> passkey
     pending: Mapping[str, Pending] = field(default_factory=dict)  # challenge -> ceremony
     sessions: Mapping[str, Session] = field(default_factory=dict)  # token -> session
+    notes: Mapping[str, Note] = field(default_factory=dict)  # user -> their note
 
 
 def state_to_json(state: State) -> dict:
@@ -151,6 +169,7 @@ def state_to_json(state: State) -> dict:
         "users": dict(state.users),
         "passkeys": {k: dataclasses.asdict(v) for k, v in state.passkeys.items()},
         "sessions": {k: dataclasses.asdict(v) for k, v in state.sessions.items()},
+        "notes": {k: dataclasses.asdict(v) for k, v in state.notes.items()},
     }
 
 
@@ -159,6 +178,7 @@ def state_from_json(data: dict) -> State:
         users=dict(data.get("users", {})),
         passkeys={k: Passkey(**v) for k, v in data.get("passkeys", {}).items()},
         sessions={k: Session(**v) for k, v in data.get("sessions", {}).items()},
+        notes={k: Note(**v) for k, v in data.get("notes", {}).items()},
     )
 
 
@@ -428,6 +448,41 @@ def finish_login(state: State, request: Request, world: World) -> tuple[State, R
     return signed_in(state, passkey.user, world, f"{passkey.user} signed in from {client.origin}")
 
 
+NOTE_LIMIT = 64 * 1024
+BASE64URL = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def signed_in_user(state: State, request: Request, world: World) -> str:
+    user = current_user(state, request, world.now)
+    if user is None:
+        raise Refused(401, "sign in first")
+    return user
+
+
+def read_note(state: State, request: Request, world: World) -> tuple[State, Response]:
+    note = state.notes.get(signed_in_user(state, request, world))
+    body = None if note is None else {"credential": note.credential, "iv": note.iv, "ciphertext": note.ciphertext}
+    return state, json_response(200, {"note": body})
+
+
+def write_note(state: State, request: Request, world: World) -> tuple[State, Response]:
+    user = signed_in_user(state, request, world)
+    body = json_body(request)
+    fields = {name: body.get(name) for name in ("credential", "iv", "ciphertext")}
+    for name, value in fields.items():
+        if not isinstance(value, str) or not value:
+            raise Refused(400, f"{name} is required")
+        # Checked by alphabet: Python's decoder silently skips what is not in it.
+        if not BASE64URL.fullmatch(value):
+            raise Refused(400, f"{name} is not base64url")
+    if len(fields["ciphertext"]) > NOTE_LIMIT:
+        raise Refused(413, "the note is too long")
+    note = Note(**fields, updated=world.now)
+    state = dataclasses.replace(state, notes={**state.notes, user: note})
+    log = f"{user} saved an encrypted note ({len(note.ciphertext)} characters of ciphertext)"
+    return state, json_response(200, {"saved": True}, note=log)
+
+
 def logout(state: State, request: Request, world: World) -> tuple[State, Response]:
     token = request.cookies.get("session", "")
     state = dataclasses.replace(
@@ -445,6 +500,8 @@ ROUTES = {
     ("POST", "/api/login/options"): begin_login,
     ("POST", "/api/login/verify"): finish_login,
     ("POST", "/api/logout"): logout,
+    ("GET", "/api/note"): read_note,
+    ("POST", "/api/note"): write_note,
 }
 
 

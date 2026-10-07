@@ -6,13 +6,13 @@ Everything below runs inside `nix-build`, with no network. Three suites:
 
 - **Rust**, `nix-build -A rust` — 48 tests. Unit tests beside each module, plus end-to-end
   transport tests over a real iroh pair on loopback.
-- **Kotlin/Robolectric**, run by the APK build — 222 tests.
-- **The injected passkey script**, `nix-build -A passkeyScript` — 20 tests, in Node.
+- **Kotlin/Robolectric**, run by the APK build — 254 tests.
+- **The injected passkey script**, `nix-build -A passkeyScript` — 29 tests, in Node.
 
 Excluded on purpose: instrumentation tests, live network against the rpi5, and anything
 that needs a real Chromium. Those are the on-device checks in [README.md](README.md).
 
-Outside the gate, `passkey-demo/` has its own suites (49 unit tests and two Chromium
+Outside the gate, `passkey-demo/` has its own suites (60 unit tests and two Chromium
 checks), described in its README. They test the demo server and run the injected script in
 real Chromium.
 
@@ -239,6 +239,8 @@ these say which field is wrong.
 - the "none" and "packed" attestation objects, byte for byte
 - what is signed is authenticator data plus the client data hash
 - base64url has no padding, tolerates it on input, and refuses garbage
+- a PRF input is salted with the specification's prefix, and a result is HMAC-SHA-256 of
+  the salted input
 
 ### Passkey requests — `PasskeyRequestsTest`
 
@@ -253,6 +255,11 @@ read as if from anyone.
 - ES256 is accepted when offered, or when nothing is offered
 - candidates are this RP ID's passkeys, narrowed by the server's allow list
 - "already registered" needs both this RP ID and an excluded id
+- a registration asking for PRF says so; PRF inputs are read, both of them; per-passkey
+  inputs are keyed by the canonical credential id
+- per-passkey inputs without an allow list are a `NotSupportedError`; for a passkey not on
+  it, or keyed by something that is not base64url, a `SyntaxError`; inputs without a
+  `first` are a `TypeError`
 
 ### Passkey ceremonies — `PasskeyAuthenticatorTest`
 
@@ -281,6 +288,29 @@ server. The verifier really does check "packed" attestation, unlike
 - refusing or withdrawing a prompt answers `NotAllowedError`. During registration it also
   leaves no key behind and nothing stored.
 - an invalidated key is forgotten, with a message that names the fingerprint as the cause
+
+### PRF — `PasskeyPrfTest`
+
+The expected results are computed in the test from the fake vault's raw PRF key, not by the
+code under test.
+
+- registering with PRF makes a PRF key and says it is enabled; the touch goes to the PRF
+  key and the signing key gets the window; the registration still verifies
+- registering without PRF keeps one strict key and says nothing about PRF; a phone that
+  cannot make a PRF key registers without it and says so; refusing the prompt leaves no
+  keys
+- a sign-in returns the result the specification defines, and still verifies
+- both inputs are answered with one touch
+- the same passkey and input always give the same result; a result does not depend on
+  which slot the input came in (what rotation relies on); another input or another passkey
+  gives another result
+- per-passkey inputs take precedence, and inputs for another passkey leave this one with
+  the general ones
+- a passkey without PRF answers with no results and still signs in; a sign-in that does
+  not ask hears nothing about PRF
+- the signing key of a PRF passkey signs only on a fresh touch
+- an invalidated PRF key forgets the whole passkey
+- another site's page gets no PRF from this passkey
 
 ### The bridge — `PasskeyBridgeTest`
 
@@ -315,6 +345,7 @@ Plain JUnit: it is a pure function of the saved state.
 - a ticket the app cannot read has no origin and claims no passkeys
 - one endpoint saved twice lists its passkeys under both, and they are not orphans
 - a passkey shows the display name, else the user name, and where its key lives
+- a passkey with PRF is shown as such
 
 ### The settings screen — `SettingsScreenTest`
 
@@ -338,6 +369,8 @@ Driven through the menu, the buttons and the dialogs.
 
 - saved passkeys read back the same; the key alias comes from the credential id
 - a corrupt store reads as empty; unreadable entries are skipped and the rest kept
+- whether a passkey has PRF is kept, and old entries have none; forgetting a passkey
+  deletes both of its keys
 
 ## The injected script — `app/src/test/js/passkeys.test.mjs`
 
@@ -359,6 +392,12 @@ In Node, against a fake bridge and a fake `navigator`.
 - other credential types go to the browser's own implementation
 - `parseCreationOptionsFromJSON` / `parseRequestOptionsFromJSON` decode base64url
 - without the bridge, the script changes nothing
+- PRF: a registration says whether PRF is wanted; inputs are relayed as base64url, both of
+  them and per passkey; a sign-in without PRF sends none; inputs without a `first` are a
+  `TypeError` that never reaches the app
+- PRF results reach the page as ArrayBuffers, `toJSON()` keeps them as sent, and an answer
+  without results stays without; registration reports whether PRF is enabled;
+  `extension:prf` is a capability; JSON options with PRF inputs parse into the binary form
 
 ## Gaps, stated rather than hidden
 

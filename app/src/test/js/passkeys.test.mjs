@@ -298,3 +298,104 @@ test("without the bridge the script changes nothing", () => {
   assert.equal(globalThis.PublicKeyCredential, undefined);
   assert.equal(navigator.credentials, undefined);
 });
+
+// --- PRF ---
+
+test("a registration asking for PRF says so, and one that does not, does not", () => {
+  const { sent, navigator } = page();
+  navigator.credentials.create({ publicKey: creation({ extensions: { prf: {} } }) });
+  navigator.credentials.create({ publicKey: creation() });
+  assert.equal(sent[0].options.extensions.prf, true);
+  assert.equal(sent[1].options.extensions.prf, false);
+});
+
+test("PRF inputs are relayed as base64url, both of them, and per passkey", () => {
+  const { sent, navigator } = page();
+  navigator.credentials.get({
+    publicKey: {
+      challenge: bytes(1),
+      allowCredentials: [{ type: "public-key", id: bytes(0xaa) }],
+      extensions: {
+        prf: {
+          eval: { first: bytes(1, 2), second: bytes(3).buffer },
+          evalByCredential: { [b64url([0xaa])]: { first: bytes(4) } },
+        },
+      },
+    },
+  });
+  const { prf } = sent[0].options.extensions;
+  assert.deepEqual(prf.eval, { first: b64url([1, 2]), second: b64url([3]) });
+  assert.deepEqual(prf.evalByCredential, { [b64url([0xaa])]: { first: b64url([4]) } });
+});
+
+test("a sign-in without PRF sends no PRF request", () => {
+  const { sent, navigator } = page();
+  navigator.credentials.get({ publicKey: { challenge: bytes(1) } });
+  assert.equal("prf" in sent[0].options.extensions, false);
+});
+
+test("PRF inputs without a first are a TypeError without asking the app", async () => {
+  const { sent, navigator } = page();
+  const pending = navigator.credentials.get({
+    publicKey: { challenge: bytes(1), extensions: { prf: { eval: { second: bytes(1) } } } },
+  });
+  await assert.rejects(pending, TypeError);
+  assert.equal(sent.length, 0);
+});
+
+test("PRF results reach the page as ArrayBuffers, and toJSON keeps them as the app sent them", async () => {
+  const { sent, navigator, reply } = page();
+  const pending = navigator.credentials.get({ publicKey: { challenge: bytes(1), extensions: { prf: { eval: { first: bytes(1) } } } } });
+  const withPrf = {
+    ...assertion,
+    clientExtensionResults: { prf: { results: { first: b64url([7, 7]), second: b64url([8]) } } },
+  };
+  reply({ id: sent[0].id, credential: withPrf });
+  const credential = await pending;
+
+  const { results } = credential.getClientExtensionResults().prf;
+  same(results.first, [7, 7]);
+  same(results.second, [8]);
+  assert.deepEqual(credential.toJSON().clientExtensionResults, withPrf.clientExtensionResults);
+});
+
+test("a PRF answer without results stays without results", async () => {
+  const { sent, navigator, reply } = page();
+  const pending = navigator.credentials.get({ publicKey: { challenge: bytes(1), extensions: { prf: { eval: { first: bytes(1) } } } } });
+  reply({ id: sent[0].id, credential: { ...assertion, clientExtensionResults: { prf: {} } } });
+  assert.deepEqual((await pending).getClientExtensionResults(), { prf: {} });
+});
+
+test("registration reports whether PRF is enabled", async () => {
+  const { sent, navigator, reply } = page();
+  const pending = navigator.credentials.create({ publicKey: creation({ extensions: { prf: {} } }) });
+  reply({ id: sent[0].id, credential: { ...registration, clientExtensionResults: { prf: { enabled: true } } } });
+  assert.deepEqual((await pending).getClientExtensionResults(), { prf: { enabled: true } });
+});
+
+test("PRF is among the capabilities", async () => {
+  page();
+  assert.equal((await PublicKeyCredential.getClientCapabilities())["extension:prf"], true);
+});
+
+test("JSON options with PRF inputs parse into the binary form", () => {
+  page();
+  const options = PublicKeyCredential.parseRequestOptionsFromJSON({
+    challenge: b64url([1]),
+    extensions: {
+      prf: { eval: { first: b64url([2]), second: b64url([3]) }, evalByCredential: { abc: { first: b64url([4]) } } },
+    },
+  });
+  same(options.extensions.prf.eval.first, [2]);
+  same(options.extensions.prf.eval.second, [3]);
+  same(options.extensions.prf.evalByCredential.abc.first, [4]);
+
+  const creationOptions = PublicKeyCredential.parseCreationOptionsFromJSON({
+    challenge: b64url([1]),
+    rp: { name: "demo" },
+    user: { id: b64url([3]), name: "a", displayName: "A" },
+    pubKeyCredParams: [],
+    extensions: { prf: {}, credProps: true },
+  });
+  assert.deepEqual(creationOptions.extensions, { prf: {}, credProps: true });
+});

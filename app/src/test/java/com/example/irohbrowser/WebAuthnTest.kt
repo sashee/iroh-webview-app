@@ -157,4 +157,21 @@ class WebAuthnTest {
         override fun getFormat() = "X.509"
         override fun getEncoded() = ByteArray(0)
     }
+
+    @Test
+    fun `a PRF input is salted with the specification's prefix`() {
+        val input = bytes("0102")
+        val prefixed = "WebAuthn PRF".toByteArray() + byteArrayOf(0) + input
+        assertArrayEquals(WebAuthn.sha256(prefixed), WebAuthn.prfSalt(input))
+    }
+
+    @Test
+    fun `a PRF result is HMAC-SHA-256 of the salted input`() {
+        val secret = ByteArray(32) { it.toByte() }
+        val expected = javax.crypto.Mac.getInstance("HmacSHA256")
+            .apply { init(javax.crypto.spec.SecretKeySpec(secret, "HmacSHA256")) }
+            .doFinal(WebAuthn.prfSalt(bytes("0102")))
+        assertArrayEquals(expected, WebAuthn.prfResult(secret, bytes("0102")))
+        assertEquals(32, expected.size)
+    }
 }

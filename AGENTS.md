@@ -111,6 +111,13 @@ proxy's port instead, because the proxy may have fallen back to another one.
 the label stands in. Earlier versions saved the ticket cut to twelve characters as a
 default ("endpointaank"), and `Endpoints.fromJson` reads exactly that as no name.
 
+**A passkey with PRF has two keys and one touch.** The touch is tied to the PRF key's single
+HMAC operation (`KeyOperation.Hmac`). The signing key of such a passkey is a window key, and
+priming it (`KeyVault.signer`) is what needs the recent touch, so it must happen after the
+prompt; before the prompt it throws. `FakeKeyVault` enforces this too. The PRF results come
+from a per-passkey secret, derived from `WebAuthn.PRF_SECRET_MESSAGE`. Never change that
+string: every key a site has derived from a result would change with it.
+
 **Release must keep `panic = "unwind"`.** iroh's Android DNS path relies on unwinding to
 fall back to public nameservers when no JNI context is installed. `abort` turns that
 fallback into a crash.
@@ -156,8 +163,8 @@ Passkeys (`app/src/main/java/com/example/irohbrowser/` and `app/src/main/assets/
 - `PasskeyAuthenticator.kt` — the two ceremonies, and the response JSON.
 - `PasskeyBridge.kt` — the message protocol: ids, the origin check, one ceremony at a time,
   cancellation.
-- `PasskeyStore.kt` — what is remembered about each passkey. The key itself stays in the
-  Keystore.
+- `PasskeyStore.kt` — what is remembered about each passkey, including whether it has a
+  PRF key. The keys themselves stay in the Keystore.
 - `PasskeyPlatform.kt` — the seams: `KeyVault`, `PasskeyUi`, `PasskeyInstaller`.
 - `AndroidPasskeys.kt` — the platform side of those seams: Keystore/StrongBox,
   BiometricPrompt, `WebViewCompat`. Thin, and only exercised on a device.

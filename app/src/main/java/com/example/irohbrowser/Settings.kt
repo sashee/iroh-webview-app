@@ -8,6 +8,8 @@ data class PasskeyRow(
     val created: Long,
     /** Where its key lives; null when the key is gone from the Keystore. */
     val storage: KeyStorage?,
+    /** Whether it has a PRF key, for sites that derive keys from it. */
+    val prf: Boolean = false,
 )
 
 /** One endpoint as the settings screen lists it. */
@@ -79,5 +81,6 @@ object Settings {
         rpId = passkey.rpId,
         created = passkey.created,
         storage = storage(passkey),
+        prf = passkey.prf,
     )
 }

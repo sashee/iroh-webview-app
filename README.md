@@ -144,9 +144,12 @@ Paste the two tickets it prints into the app. Each check depends on the one befo
     endpoint has no passkey. Create one there, then switch back: the first endpoint still
     signs in as before.
 12. Open **Endpoints and passkeys**. Each endpoint lists its own passkey, "in the
-    StrongBox security chip". Remove the second endpoint: its passkey moves to "Passkeys
-    without an endpoint", and the first endpoint's page stays as it was.
-13. Add a fingerprint in Settings, then sign in. It is refused, and the message says
+    StrongBox security chip · with PRF". Remove the second endpoint: its passkey moves to
+    "Passkeys without an endpoint", and the first endpoint's page stays as it was.
+13. PRF: on the first endpoint, unlock the encrypted note (one fingerprint), write
+    something and save it. The demo shows the server holding only ciphertext. Reload the
+    page: the note is locked again. Unlock it (one fingerprint): the text is back.
+14. Add a fingerprint in Settings, then sign in. It is refused, and the message says
     adding a fingerprint invalidated the passkey. Creating a new one works.
 
 ### Port squatting
@@ -166,10 +169,10 @@ adb shell cat /data/local/tmp/squat.log
 Finish each check with a control, `adb shell "echo probe | toybox nc -w 2 127.0.0.1 <port>"`,
 which must show up in the log. That proves the listener was really there.
 
-14. Open endpoint A, then switch to B. Listen on A's port, and press back in the app until
+15. Open endpoint A, then switch to B. Listen on A's port, and press back in the app until
     it closes. The log shows nothing but the probe: the history was dropped after the
     switch, and any request there would be refused anyway.
-15. With B open, send the app to the background and run `adb shell am kill
+16. With B open, send the app to the background and run `adb shell am kill
     com.example.irohbrowser`. Listen on B's port, then reopen the app from recents. The
     proxy logs "preferred port … unavailable", the page comes back on another port, and the
     log shows nothing but the probe. (A build from before this fix delivers `GET /` with

@@ -7,6 +7,7 @@ result, so these tests also pin down what a correct response looks like.
 """
 
 import hashlib
+import hmac
 import json
 import random
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from webauthn.helpers import base64url_to_bytes, bytes_to_base64url, encode_cbor
 
 from passkey_demo import (
     CHALLENGE_LIFETIME,
+    NOTE_LIMIT,
     Request,
     State,
     Store,
@@ -48,6 +50,14 @@ class Key:
     private_key: ec.EllipticCurvePrivateKey
     rp_id: str
     user_handle: bytes
+    # The passkey's PRF secret: CTAP's CredRandom.
+    prf_secret: bytes = b""
+
+
+def prf_result(key: Key, value: str) -> str:
+    """The PRF extension's result for a base64url input, as the specification defines it."""
+    salt = hashlib.sha256(b"WebAuthn PRF\x00" + base64url_to_bytes(value)).digest()
+    return bytes_to_base64url(hmac.new(key.prf_secret, salt, hashlib.sha256).digest())
 
 
 def host(origin: str) -> str:
@@ -75,6 +85,7 @@ def create(options: dict, origin: str, flags: int = USER_PRESENT | USER_VERIFIED
         private_key=ec.generate_private_key(ec.SECP256R1()),
         rp_id=rp_id,
         user_handle=base64url_to_bytes(options["user"]["id"]),
+        prf_secret=random.randbytes(32),
     )
     authenticator_data = (
         hashlib.sha256(rp_id.encode()).digest()
@@ -96,7 +107,7 @@ def create(options: dict, origin: str, flags: int = USER_PRESENT | USER_VERIFIED
         "rawId": bytes_to_base64url(key.credential_id),
         "type": "public-key",
         "authenticatorAttachment": "platform",
-        "clientExtensionResults": {},
+        "clientExtensionResults": {"prf": {"enabled": True}} if options.get("extensions", {}).get("prf") else {},
         "response": {
             "clientDataJSON": bytes_to_base64url(
                 client_data("webauthn.create", options["challenge"], origin)
@@ -135,12 +146,19 @@ def get(
     }
     if with_user_handle:
         response["userHandle"] = bytes_to_base64url(user_handle or key.user_handle)
+    # PRF, by the specification: per-passkey inputs first, then the general ones.
+    prf = options.get("extensions", {}).get("prf")
+    extensions = {}
+    if prf is not None:
+        inputs = (prf.get("evalByCredential") or {}).get(bytes_to_base64url(key.credential_id)) or prf.get("eval")
+        results = {name: prf_result(key, value) for name, value in (inputs or {}).items() if value}
+        extensions["prf"] = {"results": results} if results else {}
     return {
         "id": bytes_to_base64url(key.credential_id),
         "rawId": bytes_to_base64url(key.credential_id),
         "type": "public-key",
         "authenticatorAttachment": "platform",
-        "clientExtensionResults": {},
+        "clientExtensionResults": extensions,
         "response": response,
     }
 
@@ -466,6 +484,74 @@ def test_the_demo_serves_over_a_unix_socket(tmp_path):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+# --- the encrypted note ---
+
+
+def test_a_note_needs_a_session():
+    assert call(State(), "GET", "/api/note")[1].status == 401
+    assert call(State(), "POST", "/api/note", {"credential": "AA", "iv": "AA", "ciphertext": "AA"})[1].status == 401
+
+
+def test_a_note_is_stored_exactly_as_sent_and_read_back():
+    state, _, cookies = registered()
+    note = {"credential": "Y3JlZA", "iv": "aXZpdml2aXZpdml2", "ciphertext": "Y2lwaGVydGV4dA"}
+    state, saved = call(state, "POST", "/api/note", note, cookies)
+    assert saved.status == 200
+    _, read = call(state, "GET", "/api/note", cookies=cookies)
+    assert payload(read) == {"note": note}
+
+
+def test_with_no_note_there_is_none():
+    state, _, cookies = registered()
+    assert payload(call(state, "GET", "/api/note", cookies=cookies)[1]) == {"note": None}
+
+
+def test_each_user_has_their_own_note():
+    state, _, alice = registered("alice")
+    state, response, _ = register(state, "bob", ALPHA, seed=5)
+    bob = session_of(response)
+    state, _ = call(state, "POST", "/api/note", {"credential": "AA", "iv": "AA", "ciphertext": "YWxpY2U"}, alice)
+    assert payload(call(state, "GET", "/api/note", cookies=bob)[1]) == {"note": None}
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        {"iv": "AA", "ciphertext": "AA"},
+        {"credential": "AA", "iv": "", "ciphertext": "AA"},
+        {"credential": "AA", "iv": "AA", "ciphertext": "not base64url!"},
+        {"credential": "AA", "iv": "AA", "ciphertext": 5},
+    ],
+)
+def test_a_malformed_note_is_refused(note):
+    state, _, cookies = registered()
+    assert call(state, "POST", "/api/note", note, cookies)[1].status == 400
+
+
+def test_a_note_has_a_size_limit():
+    state, _, cookies = registered()
+    note = {"credential": "AA", "iv": "AA", "ciphertext": "A" * (NOTE_LIMIT + 4)}
+    assert call(state, "POST", "/api/note", note, cookies)[1].status == 413
+
+
+def test_notes_survive_a_save_and_a_load():
+    state, _, cookies = registered()
+    state, _ = call(state, "POST", "/api/note", {"credential": "AA", "iv": "AA", "ciphertext": "AA"}, cookies)
+    restored = state_from_json(json.loads(json.dumps(state_to_json(state))))
+    assert payload(call(restored, "GET", "/api/note", cookies=cookies)[1])["note"]["ciphertext"] == "AA"
+
+
+# --- the software authenticator's PRF, which check_injected_script.py relies on ---
+
+
+def test_the_software_authenticator_follows_the_prf_specification():
+    key, _ = create({"rp": {}, "user": {"id": "AA"}, "challenge": "AA"}, ALPHA)
+    options = {"challenge": "AA", "extensions": {"prf": {"eval": {"first": "AQI"}}}}
+    results = get(options, ALPHA, key)["clientExtensionResults"]["prf"]["results"]
+    salt = hashlib.sha256(b"WebAuthn PRF\x00" + b"\x01\x02").digest()
+    assert results == {"first": bytes_to_base64url(hmac.new(key.prf_secret, salt, hashlib.sha256).digest())}
 
 
 def test_the_page_is_served():

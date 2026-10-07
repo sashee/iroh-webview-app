@@ -5,6 +5,7 @@ import android.webkit.WebView
 import java.security.SecureRandom
 import java.security.Signature
 import java.security.interfaces.ECPublicKey
+import javax.crypto.Mac
 
 /**
  * Where passkeys' keys live. The real one is the Android Keystore
@@ -17,20 +18,48 @@ interface KeyVault {
      * Create a P-256 key under [alias] that signs only after the user is
      * verified, and return its public half. Throws when no such key can be
      * made, which on a phone means no fingerprint and no screen lock is set up.
+     *
+     * Normally each signature needs its own touch. With [touchWindow] the key
+     * instead accepts a touch from the last few seconds: for passkeys with a
+     * PRF key, where the touch itself goes to the PRF key and the signature
+     * follows straight after.
      */
-    fun create(alias: String): ECPublicKey
+    fun create(alias: String, touchWindow: Boolean = false): ECPublicKey
 
     /**
-     * A signature primed with [alias]'s key, for the prompt to unlock. Null
-     * when the key is gone -- or invalidated, which Android does to every key
-     * like this one when a fingerprint is added.
+     * A signature primed with [alias]'s key. Null when the key is gone -- or
+     * invalidated, which Android does to keys like these when a fingerprint
+     * is added.
+     *
+     * For an ordinary key, call it before the touch: the prompt unlocks it.
+     * For a [create]d-with-touchWindow key, call it after: priming it is what
+     * needs the recent touch, and it throws without one.
      */
     fun signer(alias: String): Signature?
+
+    /**
+     * Create an HMAC-SHA-256 key under [alias] -- a passkey's PRF key -- that
+     * needs a touch for every single operation. Throws when none can be made.
+     */
+    fun createPrf(alias: String)
+
+    /** An HMAC primed with [alias]'s PRF key, for the prompt to unlock; null when gone or invalidated. */
+    fun prf(alias: String): Mac?
 
     fun delete(alias: String)
 
     /** Where [alias]'s key lives, or null when there is no such key. */
     fun storage(alias: String): KeyStorage?
+}
+
+/**
+ * The one hardware operation a touch unlocks. The phone ties each touch to
+ * exactly one, which is why a passkey with PRF needs its signing key to take
+ * the touch on trust for a moment (see [KeyVault.create]).
+ */
+sealed interface KeyOperation {
+    class Signing(val signature: Signature) : KeyOperation
+    class Hmac(val mac: Mac) : KeyOperation
 }
 
 /** Where a key lives, from strongest to weakest. */
@@ -60,16 +89,16 @@ interface PasskeyUi {
     fun choose(endpointName: String, accounts: List<String>, chosen: (Int?) -> Unit): () -> Unit
 
     /**
-     * Ask for the fingerprint, or screen lock, that unlocks [signature]. [done]
-     * gets the unlocked signature, or why there is none. Returns a way to
-     * withdraw the prompt, which also answers [done].
+     * Ask for the fingerprint, or screen lock, that unlocks [operation]. [done]
+     * gets it unlocked, or why it is not. Returns a way to withdraw the
+     * prompt, which also answers [done].
      */
     fun verify(
         purpose: PasskeyPurpose,
         account: String,
         endpointName: String,
-        signature: Signature,
-        done: (Outcome<Signature>) -> Unit,
+        operation: KeyOperation,
+        done: (Outcome<KeyOperation>) -> Unit,
     ): () -> Unit
 }
 

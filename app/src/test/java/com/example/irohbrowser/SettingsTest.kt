@@ -98,4 +98,10 @@ class SettingsTest {
         assertEquals(listOf("Alice A.", "bob"), rows.map { it.account })
         assertEquals(listOf(KeyStorage.StrongBox, null), rows.map { it.storage })
     }
+
+    @Test
+    fun `a passkey with PRF is shown as such`() {
+        val rows = model(both, passkeys = listOf(passkey("p1", alpha).copy(prf = true), passkey("p2", alpha))).endpoints[0].passkeys
+        assertEquals(listOf(true, false), rows.map { it.prf })
+    }
 }

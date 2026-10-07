@@ -84,7 +84,36 @@
           }
         : undefined,
       attestation: options.attestation === undefined ? "none" : String(options.attestation),
-      extensions: { credProps: Boolean(options.extensions && options.extensions.credProps) },
+      extensions: {
+        credProps: Boolean(options.extensions && options.extensions.credProps),
+        // Only whether PRF is wanted: results come at sign-in, not here.
+        prf: Boolean(options.extensions && options.extensions.prf),
+      },
+    };
+  }
+
+  // The PRF extension's inputs: `eval` for whichever passkey is used, and
+  // `evalByCredential`, keyed by base64url credential id, for particular ones.
+  function prfValuesJSON(values, what) {
+    required(values, what);
+    return {
+      first: toBase64Url(required(values.first, `${what}.first`), `${what}.first`),
+      second: values.second === undefined ? undefined : toBase64Url(values.second, `${what}.second`),
+    };
+  }
+
+  function prfJSON(prf) {
+    if (!prf) return undefined;
+    return {
+      eval: prf.eval ? prfValuesJSON(prf.eval, "prf.eval") : undefined,
+      evalByCredential: prf.evalByCredential
+        ? Object.fromEntries(
+            Object.entries(prf.evalByCredential).map(([id, values]) => [
+              id,
+              prfValuesJSON(values, "prf.evalByCredential"),
+            ]),
+          )
+        : undefined,
     };
   }
 
@@ -94,6 +123,7 @@
       rpId: options.rpId === undefined ? undefined : String(options.rpId),
       allowCredentials: Array.from(options.allowCredentials || [], descriptorJSON("allowCredentials")),
       userVerification: options.userVerification,
+      extensions: { prf: prfJSON(options.extensions && options.extensions.prf) },
     };
   }
 
@@ -173,6 +203,33 @@
     return Array.from(list || [], (d) => ({ ...d, id: fromBase64Url(d.id, `${what}.id`) }));
   }
 
+  // The reverse of prfJSON, for the parse*FromJSON helpers.
+  function parsedPrfValues(values, what) {
+    return {
+      first: fromBase64Url(values.first, `${what}.first`),
+      ...(values.second === undefined ? {} : { second: fromBase64Url(values.second, `${what}.second`) }),
+    };
+  }
+
+  function parsedExtensions(extensions) {
+    if (!extensions || !extensions.prf) return extensions;
+    const { eval: evaluate, evalByCredential } = extensions.prf;
+    return {
+      ...extensions,
+      prf: {
+        ...extensions.prf,
+        ...(evaluate ? { eval: parsedPrfValues(evaluate, "prf.eval") } : {}),
+        ...(evalByCredential
+          ? {
+              evalByCredential: Object.fromEntries(
+                Object.entries(evalByCredential).map(([id, v]) => [id, parsedPrfValues(v, "prf.evalByCredential")]),
+              ),
+            }
+          : {}),
+      },
+    };
+  }
+
   class PublicKeyCredential {
     #json;
     #rawId;
@@ -199,7 +256,11 @@
       return this.#json.authenticatorAttachment ?? null;
     }
     getClientExtensionResults() {
-      return copy(this.#json.clientExtensionResults || {});
+      const results = copy(this.#json.clientExtensionResults || {});
+      // PRF results are bytes; everything else in here is plain JSON already.
+      const prf = results.prf && results.prf.results;
+      if (prf) results.prf.results = parsedPrfValues(prf, "prf.results");
+      return results;
     }
     toJSON() {
       return copy(this.#json);
@@ -224,6 +285,7 @@
         signalCurrentUserDetails: false,
         signalUnknownCredential: false,
         "extension:credProps": true,
+        "extension:prf": true,
       });
     }
     static parseCreationOptionsFromJSON(json) {
@@ -232,6 +294,7 @@
         challenge: fromBase64Url(json.challenge, "challenge"),
         user: { ...json.user, id: fromBase64Url(json.user.id, "user.id") },
         excludeCredentials: parsedDescriptors(json.excludeCredentials, "excludeCredentials"),
+        extensions: parsedExtensions(json.extensions),
       };
     }
     static parseRequestOptionsFromJSON(json) {
@@ -239,6 +302,7 @@
         ...json,
         challenge: fromBase64Url(json.challenge, "challenge"),
         allowCredentials: parsedDescriptors(json.allowCredentials, "allowCredentials"),
+        extensions: parsedExtensions(json.extensions),
       };
     }
   }

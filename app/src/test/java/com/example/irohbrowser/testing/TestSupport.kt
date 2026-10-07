@@ -7,6 +7,7 @@ import com.example.irohbrowser.AppContainer
 import com.example.irohbrowser.EndpointStore
 import com.example.irohbrowser.EndpointIdentity
 import com.example.irohbrowser.Endpoints
+import com.example.irohbrowser.KeyOperation
 import com.example.irohbrowser.KeyStorage
 import com.example.irohbrowser.KeyVault
 import com.example.irohbrowser.Outcome
@@ -29,6 +30,8 @@ import java.security.KeyPairGenerator
 import java.security.Signature
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import kotlin.random.Random
 
 /**
@@ -130,10 +133,19 @@ class FakeSiteData : SiteData {
  *
  * Signs without anyone's finger -- the opposite of the real one, which is the
  * point: what the tests check is what is signed and when, and that the result
- * verifies, not the Keystore's own enforcement.
+ * verifies, not the Keystore's own enforcement. The one piece of enforcement
+ * kept is the window key's: it will not prime a signature unless a touch has
+ * just happened, because getting that order wrong would work in a test and
+ * fail on every phone.
  */
 class FakeKeyVault : KeyVault {
     val keys = mutableMapOf<String, KeyPair>()
+
+    /** PRF keys, as their raw HMAC secrets so a test can compute what the results should be. */
+    val prfKeys = mutableMapOf<String, ByteArray>()
+
+    /** Signing keys created to accept a recent touch rather than one per signature. */
+    val windowKeys = mutableSetOf<String>()
 
     /** Aliases whose keys behave as if a new fingerprint had invalidated them. */
     val invalidated = mutableSetOf<String>()
@@ -141,26 +153,48 @@ class FakeKeyVault : KeyVault {
     /** Make [create] fail, as it does on a phone with no fingerprint or screen lock. */
     var refuseToCreate = false
 
-    override fun create(alias: String): ECPublicKey {
+    /** Make [createPrf] fail, as on a phone whose Keystore has no HMAC keys. */
+    var refuseToCreatePrf = false
+
+    /** Whether a touch happened recently enough for window keys. Set when the fake prompt approves. */
+    var touchedRecently = false
+
+    override fun create(alias: String, touchWindow: Boolean): ECPublicKey {
         if (refuseToCreate) throw IllegalStateException("no screen lock")
         val pair = KeyPairGenerator.getInstance("EC")
             .apply { initialize(ECGenParameterSpec("secp256r1")) }
             .generateKeyPair()
         keys[alias] = pair
+        if (touchWindow) windowKeys += alias
         return pair.public as ECPublicKey
     }
 
     override fun signer(alias: String): Signature? {
         if (alias in invalidated) return null
         val pair = keys[alias] ?: return null
+        if (alias in windowKeys && !touchedRecently) throw IllegalStateException("User not authenticated")
         return Signature.getInstance("SHA256withECDSA").apply { initSign(pair.private) }
+    }
+
+    override fun createPrf(alias: String) {
+        if (refuseToCreatePrf) throw IllegalStateException("no HMAC keys here")
+        prfKeys[alias] = Random.nextBytes(32)
+    }
+
+    override fun prf(alias: String): Mac? {
+        if (alias in invalidated) return null
+        val secret = prfKeys[alias] ?: return null
+        return Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(secret, "HmacSHA256")) }
     }
 
     override fun delete(alias: String) {
         keys.remove(alias)
+        prfKeys.remove(alias)
+        windowKeys.remove(alias)
     }
 
-    override fun storage(alias: String): KeyStorage? = if (alias in keys) KeyStorage.Software else null
+    override fun storage(alias: String): KeyStorage? =
+        if (alias in keys || alias in prfKeys) KeyStorage.Software else null
 }
 
 /** A [PasskeyUi] whose user does what the test says. */
@@ -170,6 +204,12 @@ class FakePasskeyUi : PasskeyUi {
     enum class Verdict { Approve, Refuse, Hold }
 
     val prompts = mutableListOf<Prompt>()
+
+    /** What each prompt was asked to unlock. */
+    val operations = mutableListOf<KeyOperation>()
+
+    /** Runs as a touch is given -- where the real Keystore starts honouring window keys. */
+    var onApprove: () -> Unit = {}
 
     /** Every account list the chooser was shown. */
     val chooserShown = mutableListOf<List<String>>()
@@ -195,15 +235,20 @@ class FakePasskeyUi : PasskeyUi {
         purpose: PasskeyPurpose,
         account: String,
         endpointName: String,
-        signature: Signature,
-        done: (Outcome<Signature>) -> Unit,
+        operation: KeyOperation,
+        done: (Outcome<KeyOperation>) -> Unit,
     ): () -> Unit {
         prompts += Prompt(purpose, account, endpointName)
+        operations += operation
         val refusal = Outcome.Failed(PasskeyError.notAllowed("cancelled"))
+        val approve = {
+            onApprove()
+            done(Outcome.Ok(operation))
+        }
         when (verdict) {
-            Verdict.Approve -> done(Outcome.Ok(signature))
+            Verdict.Approve -> approve()
             Verdict.Refuse -> done(refusal)
-            Verdict.Hold -> held = { done(Outcome.Ok(signature)) }
+            Verdict.Hold -> held = approve
         }
         // Like BiometricPrompt: withdrawing a prompt still answers it, with an error.
         return {
@@ -267,6 +312,10 @@ class FakePasskeys(context: Context) {
     val ui = FakePasskeyUi()
     val store = PasskeyStore(context.getSharedPreferences("passkeys-test", Context.MODE_PRIVATE))
     private val random = Random(7)
+
+    init {
+        ui.onApprove = { vault.touchedRecently = true }
+    }
 
     val platform = PasskeyPlatform(
         installer = installer,

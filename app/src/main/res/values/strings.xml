@@ -35,6 +35,7 @@
     <string name="settings_delete_explained">This phone can never sign with it again. The server on %1$s keeps its record of the passkey, so signing in there will need another way in until you create a new one.</string>
     <string name="passkey_on_site">%1$s on %2$s</string>
     <string name="passkey_details">Created %1$s · key %2$s</string>
+    <string name="passkey_details_prf">Created %1$s · key %2$s · with PRF</string>
     <string name="key_strongbox">in the StrongBox security chip</string>
     <string name="key_tee">in the trusted execution environment</string>
     <string name="key_software">in software</string>

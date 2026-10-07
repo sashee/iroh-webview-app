@@ -4,6 +4,8 @@ import java.math.BigInteger
 import java.security.MessageDigest
 import java.security.interfaces.ECPublicKey
 import java.util.Base64
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * The bytes of WebAuthn: what an authenticator writes and a server verifies.
@@ -111,6 +113,31 @@ object WebAuthn {
             ),
             Cbor.text("authData") to Cbor.bytes(authenticatorData),
         )
+
+    /**
+     * The message the passkey's PRF key in the Keystore is applied to, once
+     * per touch, to produce the passkey's PRF secret. Fixed for good: changing
+     * it changes every passkey's PRF results, and with them every key a site
+     * derived from them.
+     */
+    const val PRF_SECRET_MESSAGE = "iroh-webview-app passkey PRF secret v1"
+
+    /**
+     * A PRF input as the authenticator sees it: SHA-256("WebAuthn PRF" ‖ 0x00 ‖ input).
+     * The prefix keeps WebAuthn's results apart from any other use of the
+     * same secret.
+     */
+    fun prfSalt(input: ByteArray): ByteArray =
+        sha256("WebAuthn PRF".toByteArray(Charsets.US_ASCII) + byteArrayOf(0) + input)
+
+    /**
+     * One PRF result: HMAC-SHA-256 of the salted input under the passkey's
+     * secret, which is what CTAP's hmac-secret extension computes.
+     */
+    fun prfResult(secret: ByteArray, input: ByteArray): ByteArray =
+        Mac.getInstance("HmacSHA256")
+            .apply { init(SecretKeySpec(secret, "HmacSHA256")) }
+            .doFinal(prfSalt(input))
 
     /** What an assertion or a self attestation signs. */
     fun signedData(authenticatorData: ByteArray, clientDataJson: ByteArray): ByteArray =

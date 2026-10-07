@@ -31,6 +31,17 @@ in Chromium, in place of Chromium's own WebAuthn, with the software authenticato
 stand-in for the app's bridge. It shows the script takes over before the page's own scripts
 run, and that the objects it builds carry a real site's code all the way to py_webauthn.
 
+## The encrypted note
+
+Each account keeps one note that the server cannot read. Unlocking signs in with a PRF
+request; the page turns the passkey's PRF result into an AES-GCM key with WebCrypto (HKDF)
+and keeps it in memory only. The server stores the ciphertext, the nonce and which
+passkey's key made it, nothing more. A note opens only with the passkey that wrote it:
+there is no recovery here, by design, since that is the real service's job.
+
+`check_chromium.py` runs this against Chromium's own PRF, and `check_injected_script.py`
+through the app's script.
+
 ## On the phone
 
 ```sh

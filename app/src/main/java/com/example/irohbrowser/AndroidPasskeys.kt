@@ -22,6 +22,10 @@ import java.security.PrivateKey
 import java.security.Signature
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
+import javax.crypto.KeyGenerator
+import javax.crypto.Mac
+import javax.crypto.SecretKey
+import javax.crypto.SecretKeyFactory
 
 /** The logcat tag the Rust half logs under too, so one filter shows both. */
 private const val LOG_TAG = "irohbrowser"
@@ -37,45 +41,69 @@ private const val LOG_TAG = "irohbrowser"
  * Keys in the Android Keystore, in the StrongBox chip where there is one (the
  * Titan M2 on a Pixel 6a), in the TEE otherwise.
  *
- * Each key needs the user for every single signature: a strong biometric, or
- * the screen lock as a fallback for when the sensor will not read. There is no
- * "unlocked for the next 30 seconds" window for a page to use.
+ * Every key needs the user: a strong biometric, or the screen lock as a
+ * fallback for when the sensor will not read. Signing keys and PRF keys need a
+ * touch per operation. The one exception is the signing key of a passkey with
+ * PRF, which accepts the touch its PRF key just took, for a few seconds --
+ * because the phone ties each touch to a single operation, and one touch per
+ * sign-in was the requirement.
  */
 object AndroidKeyVault : KeyVault {
 
     private const val KEYSTORE = "AndroidKeyStore"
 
-    override fun create(alias: String): ECPublicKey {
-        val generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, KEYSTORE)
-        fun generate(strongBox: Boolean): ECPublicKey {
-            generator.initialize(
-                KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
-                    .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
-                    .setDigests(KeyProperties.DIGEST_SHA256)
-                    .setUserAuthenticationRequired(true)
-                    .setUserAuthenticationParameters(
-                        0,
-                        KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL,
-                    )
-                    .setIsStrongBoxBacked(strongBox)
-                    .build(),
-            )
-            return generator.generateKeyPair().public as ECPublicKey
-        }
-        val publicKey = try {
-            generate(strongBox = true)
-        } catch (_: StrongBoxUnavailableException) {
-            generate(strongBox = false)
+    /** A strong biometric, or the screen lock for when the sensor will not read. */
+    private const val USER = KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL
+
+    /**
+     * How long a window key accepts a touch. The signature follows the touch
+     * within a fraction of a second; the rest is room for StrongBox, which is
+     * slow, to finish the PRF key's operation first.
+     */
+    private const val TOUCH_WINDOW_SECONDS = 5
+
+    override fun create(alias: String, touchWindow: Boolean): ECPublicKey {
+        val publicKey = inStrongBoxIfPossible { strongBox ->
+            KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, KEYSTORE).apply {
+                initialize(
+                    KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
+                        .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                        .setDigests(KeyProperties.DIGEST_SHA256)
+                        .setUserAuthenticationRequired(true)
+                        .setUserAuthenticationParameters(if (touchWindow) TOUCH_WINDOW_SECONDS else 0, USER)
+                        .setIsStrongBoxBacked(strongBox)
+                        .build(),
+                )
+            }.generateKeyPair().public as ECPublicKey
         }
         // The one place that says whether the key really is in the chip.
         Log.i(LOG_TAG, "passkey key created in ${storage(alias)}")
         return publicKey
     }
 
+    override fun createPrf(alias: String) {
+        inStrongBoxIfPossible { strongBox ->
+            KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_HMAC_SHA256, KEYSTORE).apply {
+                init(
+                    KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
+                        .setUserAuthenticationRequired(true)
+                        .setUserAuthenticationParameters(0, USER)
+                        .setIsStrongBoxBacked(strongBox)
+                        .build(),
+                )
+            }.generateKey()
+        }
+        Log.i(LOG_TAG, "passkey PRF key created in ${storage(alias)}")
+    }
+
     override fun storage(alias: String): KeyStorage? {
-        val key = keyStore().getKey(alias, null) as? PrivateKey ?: return null
+        val key = keyStore().getKey(alias, null) ?: return null
         val info = runCatching {
-            KeyFactory.getInstance(key.algorithm, KEYSTORE).getKeySpec(key, KeyInfo::class.java)
+            when (key) {
+                is PrivateKey -> KeyFactory.getInstance(key.algorithm, KEYSTORE).getKeySpec(key, KeyInfo::class.java)
+                is SecretKey -> SecretKeyFactory.getInstance(key.algorithm, KEYSTORE).getKeySpec(key, KeyInfo::class.java) as KeyInfo
+                else -> null
+            }
         }.getOrNull() ?: return KeyStorage.Unknown
         return when (info.securityLevel) {
             KeyProperties.SECURITY_LEVEL_STRONGBOX -> KeyStorage.StrongBox
@@ -94,11 +122,27 @@ object AndroidKeyVault : KeyVault {
         }
     }
 
+    override fun prf(alias: String): Mac? {
+        val key = keyStore().getKey(alias, null) as? SecretKey ?: return null
+        return try {
+            Mac.getInstance("HmacSHA256").apply { init(key) }
+        } catch (_: KeyPermanentlyInvalidatedException) {
+            null
+        }
+    }
+
     override fun delete(alias: String) {
         runCatching { keyStore().deleteEntry(alias) }
     }
 
     private fun keyStore(): KeyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+
+    private fun <T> inStrongBoxIfPossible(make: (strongBox: Boolean) -> T): T =
+        try {
+            make(true)
+        } catch (_: StrongBoxUnavailableException) {
+            make(false)
+        }
 }
 
 /** The system's fingerprint prompt, and a plain dialog for choosing an account. */
@@ -121,8 +165,8 @@ class BiometricPasskeyUi(private val activity: Activity) : PasskeyUi {
         purpose: PasskeyPurpose,
         account: String,
         endpointName: String,
-        signature: Signature,
-        done: (Outcome<Signature>) -> Unit,
+        operation: KeyOperation,
+        done: (Outcome<KeyOperation>) -> Unit,
     ): () -> Unit {
         val cancellation = CancellationSignal()
         val title = when (purpose) {
@@ -140,12 +184,19 @@ class BiometricPasskeyUi(private val activity: Activity) : PasskeyUi {
             .setAllowedAuthenticators(BIOMETRIC_STRONG or DEVICE_CREDENTIAL)
             .build()
             .authenticate(
-                BiometricPrompt.CryptoObject(signature),
+                when (operation) {
+                    is KeyOperation.Signing -> BiometricPrompt.CryptoObject(operation.signature)
+                    is KeyOperation.Hmac -> BiometricPrompt.CryptoObject(operation.mac)
+                },
                 cancellation,
                 activity.mainExecutor,
                 object : BiometricPrompt.AuthenticationCallback() {
                     override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                        val unlocked = result.cryptoObject?.signature
+                        val crypto = result.cryptoObject
+                        val unlocked = when (operation) {
+                            is KeyOperation.Signing -> crypto?.signature?.let(KeyOperation::Signing)
+                            is KeyOperation.Hmac -> crypto?.mac?.let(KeyOperation::Hmac)
+                        }
                         done(
                             if (unlocked != null) {
                                 Outcome.Ok(unlocked)
