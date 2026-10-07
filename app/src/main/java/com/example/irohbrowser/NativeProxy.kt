@@ -51,8 +51,16 @@ object NativeProxy : ProxyController {
         nativeStop()
     }
 
+    override fun identify(ticket: String): EndpointIdentity? {
+        val identity = nativeIdentity(ticket) ?: return null
+        val label = identity.substringBeforeLast(':')
+        val port = identity.substringAfterLast(':').toIntOrNull() ?: return null
+        return EndpointIdentity(label, port)
+    }
+
     private external fun nativeInstallContext(context: Context)
     private external fun nativeStart(ticket: String): Int
     private external fun nativeLabel(): String?
     private external fun nativeStop()
+    private external fun nativeIdentity(ticket: String): String?
 }

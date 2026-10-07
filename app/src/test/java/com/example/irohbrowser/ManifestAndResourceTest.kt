@@ -28,7 +28,7 @@ class ManifestAndResourceTest {
         .getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS)
 
     @Test
-    fun `only the two networking permissions are requested`() {
+    fun `only the networking and passkey permissions are requested`() {
         // The app talks to one iroh endpoint and to loopback. Anything else in
         // this list would need explaining.
         //
@@ -36,6 +36,9 @@ class ManifestAndResourceTest {
         // device's nameservers, and without it every DNS lookup goes to Google.
         // Downloads add none: scoped storage covers DownloadManager from API 29
         // and minSdk is 34.
+        //
+        // USE_BIOMETRIC shows the system fingerprint prompt that unlocks a
+        // passkey. It grants no access to biometric data.
         //
         // AGP synthesises DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION for every
         // targetSdk 33+ app; it is not ours to remove and grants nothing.
@@ -46,6 +49,7 @@ class ManifestAndResourceTest {
             listOf(
                 "android.permission.ACCESS_NETWORK_STATE",
                 "android.permission.INTERNET",
+                "android.permission.USE_BIOMETRIC",
             ),
             requested.sorted(),
         )
@@ -228,10 +232,12 @@ class ManifestAndResourceTest {
             R.string.connect,
             R.string.error_bad_ticket,
             R.string.error_start_failed,
-            R.string.menu_add,
-            R.string.menu_switch,
-            R.string.menu_remove,
             R.string.menu_reload,
+            R.string.menu_settings,
+            R.string.passkey_register_title,
+            R.string.passkey_sign_in_title,
+            R.string.passkey_account_on_endpoint,
+            R.string.passkey_choose_account,
         ).forEach { assertNotNull(context.getString(it)) }
     }
 }

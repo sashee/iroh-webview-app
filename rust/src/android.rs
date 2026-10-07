@@ -1,4 +1,4 @@
-//! The JNI surface. Two methods, plus one initialiser.
+//! The JNI surface. Four methods, plus one initialiser.
 //!
 //! Deliberately tiny: everything with any judgement in it lives in the modules
 //! this calls, which are testable on the host. What is here is only the
@@ -17,7 +17,10 @@ use jni::{
     JNIEnv,
 };
 
-use crate::runtime::{self, Running};
+use crate::{
+    runtime::{self, Running},
+    ticket,
+};
 
 /// The proxy, if one is running. At most one: the app switches endpoints rather
 /// than running several.
@@ -53,9 +56,27 @@ pub extern "system" fn Java_com_example_irohbrowser_NativeProxy_nativeInstallCon
     android_logger::init_once(
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Info)
-            // Info, not Debug: `android_logger` routes the whole `log` facade,
-            // so Debug pulls in iroh, rustls and hickory and buries our own
-            // lines. Raise it when chasing a transport problem.
+            // `android_logger` routes the whole `log` facade, so the
+            // dependencies log under our tag too. At Info, iroh reports every
+            // path event and every send -- on a Pixel 6a that buried our own
+            // lines completely -- so they get Warn and only this crate gets
+            // Info. The longest matching prefix wins, which is what keeps
+            // `iroh_webview_proxy` out of `iroh`'s directive.
+            //
+            // `tracing` is there because a span without fields reaches `log`
+            // under the target "tracing::span", not its own module: the
+            // `iroh::...` that logcat shows in front of those lines is the
+            // module path android_logger prints, which the filter never sees.
+            // Raise these when chasing a transport problem.
+            .with_filter(
+                android_logger::FilterBuilder::new()
+                    .parse(
+                        "info,iroh=warn,noq=warn,hickory=warn,rustls=warn,\
+                         netwatch=warn,portmapper=warn,tracing=warn,\
+                         iroh_webview_proxy=info",
+                    )
+                    .build(),
+            )
             .with_tag("irohbrowser"),
     );
     log::info!("native library initialising");
@@ -116,6 +137,25 @@ pub extern "system" fn Java_com_example_irohbrowser_NativeProxy_nativeLabel(
     let label = lock().as_ref().map(|running| running.label().to_string());
     match label.and_then(|label| env.new_string(label).ok()) {
         Some(label) => label.into_raw(),
+        None => JObject::null().into_raw() as jstring,
+    }
+}
+
+/// The label and preferred port of the endpoint `ticket` names, as
+/// `"<label>:<port>"`, or null when it is not a ticket. Starts nothing.
+#[no_mangle]
+pub extern "system" fn Java_com_example_irohbrowser_NativeProxy_nativeIdentity(
+    mut env: JNIEnv,
+    _class: JClass,
+    ticket: JString,
+) -> jstring {
+    let identity = env
+        .get_string(&ticket)
+        .ok()
+        .and_then(|ticket| ticket::identity(&String::from(ticket)).ok())
+        .map(|(label, port)| format!("{label}:{port}"));
+    match identity.and_then(|identity| env.new_string(identity).ok()) {
+        Some(identity) => identity.into_raw(),
         None => JObject::null().into_raw() as jstring,
     }
 }

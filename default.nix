@@ -84,10 +84,19 @@ let
 
   # The cdylib for every ABI the APK ships, laid out for Gradle's jniLibs.
   nativeLibs = import ./nix/native-libs.nix { inherit pkgs minSdk; };
+
+  # The script injected into pages for passkeys, tested in Node against a fake
+  # bridge. Robolectric's WebView runs no JavaScript, so without this the
+  # script would first execute on the phone.
+  passkeyScript = pkgs.runCommand "passkey-script-tests" { nativeBuildInputs = [ pkgs.nodejs ]; } ''
+    PASSKEYS_JS=${./app/src/main/assets/passkeys.js} node --test ${./app/src/test/js/passkeys.test.mjs}
+    touch $out
+  '';
 in
 
-# `nix-build` produces the signed APK, having run both test suites on the way.
-# `nix-build -A rust` and `-A nativeLibs` stop at the halves.
+# `nix-build` produces the signed APK, having run all three test suites on the
+# way: Rust, the passkey script's, and Robolectric. `nix-build -A rust`,
+# `-A passkeyScript` and `-A nativeLibs` stop at the parts.
 pkgs.stdenv.mkDerivation {
   pname = "iroh-webview-app";
   inherit version src;
@@ -114,6 +123,7 @@ pkgs.stdenv.mkDerivation {
     # Named only to make the Rust suite a build dependency of the APK: a
     # library whose own tests fail should not reach a phone. Nothing reads it.
     export RUST_TESTS_PASSED=${rust}
+    export PASSKEY_SCRIPT_TESTS_PASSED=${passkeyScript}
     mkdir -p .gradle-home
     export GRADLE_USER_HOME=$PWD/.gradle-home
     gradle --offline --no-daemon --init-script ${./nix/offline-init.gradle.kts} -Dorg.gradle.project.android.aapt2FromMavenOverride=${buildTools}/aapt2 testDebugUnitTest assembleRelease
@@ -124,5 +134,5 @@ pkgs.stdenv.mkDerivation {
     cp app/build/outputs/apk/release/app-release.apk $out/
   '';
 
-  passthru = { inherit rust nativeLibs; };
+  passthru = { inherit rust nativeLibs passkeyScript; };
 }

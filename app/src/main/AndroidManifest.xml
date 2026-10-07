@@ -2,10 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
-      Two permissions, both networking. Downloads need none: scoped storage
-      covers DownloadManager from API 29, and minSdk is 34. The app reads no
-      storage, no contacts and no location, and a reviewer should be able to see
-      that from here.
+      Two networking permissions, and one for passkeys. Downloads need none:
+      scoped storage covers DownloadManager from API 29, and minSdk is 34. The
+      app reads no storage, no contacts and no location, and a reviewer should
+      be able to see that from here.
     -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!--
@@ -16,6 +16,13 @@
       DNS is blocked.
     -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!--
+      Passkeys: a page's sign-in is signed by a Keystore key that only unlocks
+      with a fingerprint (or the screen lock), and BiometricPrompt is how the
+      app asks for it. A normal permission; it grants no access to biometric
+      data, only the right to show the system prompt.
+    -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
     <application
         android:name=".IrohBrowserApp"

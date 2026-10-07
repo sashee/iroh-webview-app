@@ -119,4 +119,8 @@ dependencies {
     testImplementation("androidx.test:core:1.5.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.11.1")
+    // Plays the server in PasskeyAuthenticatorTest: an independent WebAuthn
+    // implementation, so the passkeys the app produces are checked by code
+    // that did not produce them.
+    testImplementation("com.webauthn4j:webauthn4j-core:0.31.11.RELEASE")
 }

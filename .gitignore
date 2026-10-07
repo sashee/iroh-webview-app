@@ -5,3 +5,5 @@ result-*
 build/
 .gradle-home/
 .kotlin/
+__pycache__/
+.trial/

@@ -16,11 +16,18 @@ import android.net.Uri
  */
 object Origins {
 
+    /**
+     * The hostname an endpoint is browsed at -- and so also the RP ID its
+     * passkeys belong to, which is why it must stay a pure function of the
+     * label.
+     */
+    fun host(label: String): String = "$label.localhost"
+
     /** The page the WebView is pointed at for a freshly started proxy. */
-    fun url(label: String, port: Int): String = "http://$label.localhost:$port/"
+    fun url(label: String, port: Int): String = "http://${host(label)}:$port/"
 
     /** The origin, without a path, that [url] belongs to. */
-    fun origin(label: String, port: Int): String = "http://$label.localhost:$port"
+    fun origin(label: String, port: Int): String = "http://${host(label)}:$port"
 
     /**
      * Whether [url] is a page of the running proxy, and so belongs inside the

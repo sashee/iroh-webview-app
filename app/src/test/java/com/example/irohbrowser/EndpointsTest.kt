@@ -1,6 +1,7 @@
 package com.example.irohbrowser
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -176,8 +177,49 @@ class EndpointsTest {
     }
 
     @Test
-    fun `an entry without a name gets a readable default`() {
+    fun `an entry without a name has none`() {
         val json = """{"endpoints":[{"ticket":"abcdefghijklmnop"}],"selected":0}"""
-        assertEquals("abcdefghijkl", Endpoints.fromJson(json).all[0].name)
+        assertNull(Endpoints.fromJson(json).all[0].name)
+    }
+
+    @Test
+    fun `the old default name reads as no name`() {
+        // Earlier versions saved the ticket's first twelve characters when the
+        // user gave no name, and every ticket starts with "endpoint".
+        val json = """{"endpoints":[{"ticket":"endpointaankziuk4","name":"endpointaank"}],"selected":0}"""
+        assertNull(Endpoints.fromJson(json).all[0].name)
+    }
+
+    @Test
+    fun `a name that is the whole of a short ticket is a real name`() {
+        // The old default was the ticket cut short; nothing was ever cut from
+        // a ticket of twelve characters or fewer.
+        val json = """{"endpoints":[{"ticket":"ticket-alpha","name":"ticket-alpha"}],"selected":0}"""
+        assertEquals("ticket-alpha", Endpoints.fromJson(json).all[0].name)
+    }
+
+    @Test
+    fun `an unnamed endpoint is not saved with a name`() {
+        val saved = Endpoints().add(Endpoint("t")).toJson()
+        assertEquals(Endpoints().add(Endpoint("t")), Endpoints.fromJson(saved))
+        assertFalse(saved.contains("\"name\""))
+    }
+
+    @Test
+    fun `renaming to blank goes back to no name`() {
+        val endpoints = Endpoints().add(endpoint(1)).rename(0, "   ")
+        assertNull(endpoints.all[0].name)
+    }
+
+    @Test
+    fun `a name is trimmed`() {
+        assertEquals("rpi5", Endpoints().add(endpoint(1)).rename(0, "  rpi5 ").all[0].name)
+    }
+
+    @Test
+    fun `the display name is the user's, else the label, else the ticket`() {
+        assertEquals("rpi5", Endpoint("t", "rpi5").displayName("1aaca28ae50b8d96"))
+        assertEquals("1aaca28ae50b8d96", Endpoint("t").displayName("1aaca28ae50b8d96"))
+        assertEquals("t", Endpoint("t").displayName(null))
     }
 }

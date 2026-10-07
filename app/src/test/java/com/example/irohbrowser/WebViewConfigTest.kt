@@ -2,6 +2,7 @@ package com.example.irohbrowser
 
 import android.webkit.WebSettings
 import android.webkit.WebView
+import androidx.test.core.app.ApplicationProvider
 import com.example.irohbrowser.testing.TestHarness
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -101,18 +102,34 @@ class WebViewConfigTest {
     }
 
     @Test
-    fun `no javascript bridge is installed`() {
-        // `addJavascriptInterface` hands page JavaScript a call into the app
-        // process. A call that never happens leaves nothing for reflection to
-        // find, so this asserts on the compiled class instead: the constant pool
-        // has no reference to the method at all.
-        val bytecode = MainActivity::class.java.classLoader!!
-            .getResourceAsStream("com/example/irohbrowser/MainActivity.class")!!
-            .use { it.readBytes() }
+    fun `the passkey script looks for the bridge the app installs`() {
+        // Two halves in two languages, joined by a name. If they drift apart,
+        // pages silently get no passkeys.
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val script = context.assets.open(PasskeyBridge.SCRIPT_ASSET).bufferedReader().use { it.readText() }
+        assertTrue(script.contains("globalThis.${PasskeyBridge.NAME}"))
+    }
 
-        assertFalse(
-            "MainActivity references addJavascriptInterface",
-            String(bytecode, Charsets.ISO_8859_1).contains("addJavascriptInterface"),
-        )
+    @Test
+    fun `no javascript interface is installed`() {
+        // The one bridge into the app is the passkey one: a WebMessageListener
+        // restricted to the endpoint's origin (see PasskeyWiringTest), whose
+        // messages are data. `addJavascriptInterface` would instead hand page
+        // JavaScript callable methods in the app process, in every frame of
+        // every origin.
+        //
+        // A call that never happens leaves nothing for reflection to find, so
+        // this asserts on the compiled classes instead: the constant pool has
+        // no reference to the method at all.
+        listOf(MainActivity::class.java, WebViewPasskeyInstaller::class.java).forEach { type ->
+            val bytecode = type.classLoader!!
+                .getResourceAsStream(type.name.replace('.', '/') + ".class")!!
+                .use { it.readBytes() }
+
+            assertFalse(
+                "${type.simpleName} references addJavascriptInterface",
+                String(bytecode, Charsets.ISO_8859_1).contains("addJavascriptInterface"),
+            )
+        }
     }
 }

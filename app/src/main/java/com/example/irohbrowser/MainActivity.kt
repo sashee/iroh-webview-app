@@ -17,11 +17,11 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 
 /**
@@ -59,6 +59,17 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var fileChooser: ActivityResultLauncher<Array<String>>
 
+    private lateinit var passkeys: PasskeyBridge
+    private lateinit var settings: ScrollView
+    private lateinit var settingsScreen: SettingsScreen
+
+    /**
+     * Takes the passkey bridge away from the origin it was offered to. Null
+     * when nothing is offered: no endpoint running, or a WebView without the
+     * features the bridge needs.
+     */
+    private var withdrawPasskeyBridge: (() -> Unit)? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -69,6 +80,17 @@ class MainActivity : AppCompatActivity() {
         ticketField = findViewById(R.id.ticket_field)
         entryError = findViewById(R.id.entry_error)
         siteData = container.siteData(webView)
+        settings = findViewById(R.id.settings)
+        settingsScreen = SettingsScreen(findViewById(R.id.settings_content), settingsActions)
+        passkeys = PasskeyBridge(
+            PasskeyAuthenticator(
+                store = container.passkeys.store,
+                vault = container.passkeys.vault,
+                ui = container.passkeys.ui(this),
+                random = container.passkeys.random,
+                clock = container.passkeys.clock,
+            ),
+        )
 
         fileChooser = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
             pendingFileChooser?.onReceiveValue(uris.orEmpty().toTypedArray())
@@ -215,13 +237,13 @@ class MainActivity : AppCompatActivity() {
     /** Save a ticket and switch to it. */
     internal fun addEndpoint(ticket: String) {
         val trimmed = ticket.trim()
-        if (trimmed.isEmpty()) {
+        // Checked before saving: a string that names no endpoint would only
+        // sit in the list as an entry that can never open.
+        if (trimmed.isEmpty() || container.proxy.identify(trimmed) == null) {
             showEntryError(getString(R.string.error_bad_ticket))
             return
         }
-        endpoints = container.store.update {
-            it.add(Endpoint(trimmed, Endpoints.defaultName(trimmed)))
-        }
+        endpoints = container.store.update { it.add(Endpoint(trimmed)) }
         openSelected()
     }
 
@@ -231,17 +253,31 @@ class MainActivity : AppCompatActivity() {
         openSelected()
     }
 
-    /** Forget a saved endpoint, and the session that went with it. */
+    /**
+     * Forget a saved endpoint, and the session that went with it.
+     *
+     * Any endpoint, not only the one on screen. Only removing the open one
+     * changes what is on screen; removing another leaves its proxy, and the
+     * page, alone.
+     */
     internal fun removeEndpoint(index: Int) {
-        // Only reachable for the endpoint on screen, which is the one whose
-        // origin we know: the label comes from the running proxy. Removing a
-        // different one would leave its cookies behind, which is why the menu
-        // only ever offers the selected one.
-        if (index == endpoints.selectedIndex) {
-            binding?.let { siteData.clear(Origins.origin(it.label, it.port)) }
-        }
+        if (index !in endpoints.all.indices) return
+        val open = index == endpoints.selectedIndex
+        originOf(index)?.let(siteData::clear)
         endpoints = container.store.update { it.remove(index) }
-        openSelected()
+        if (open) openSelected()
+    }
+
+    /**
+     * Where endpoint [index] is browsed: the running proxy's origin if it is the
+     * open one -- the proxy may have fallen back from its preferred port --
+     * and the origin its ticket names otherwise.
+     */
+    private fun originOf(index: Int): String? {
+        val running = binding?.takeIf { index == endpoints.selectedIndex }
+        if (running != null) return Origins.origin(running.label, running.port)
+        val identity = container.proxy.identify(endpoints.all[index].ticket) ?: return null
+        return Origins.origin(identity.label, identity.preferredPort)
     }
 
     /**
@@ -256,6 +292,7 @@ class MainActivity : AppCompatActivity() {
     private fun openSelected(loadIndex: Boolean = true) {
         container.proxy.stop()
         binding = null
+        withdrawPasskeys()
 
         val endpoint = endpoints.selected
         if (endpoint == null) {
@@ -266,6 +303,9 @@ class MainActivity : AppCompatActivity() {
         when (val result = container.proxy.start(endpoint.ticket)) {
             is ProxyResult.Started -> {
                 binding = result.binding
+                // Before the load: the script is injected into documents that
+                // start after this, and the first page should have it.
+                offerPasskeys(result.binding)
                 showWebView()
                 if (loadIndex) {
                     webView.loadUrl(Origins.url(result.binding.label, result.binding.port))
@@ -285,7 +325,31 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Give this endpoint's pages, and only them, a way to reach its passkeys.
+     *
+     * The origin is fixed here, from the proxy that was just started: the
+     * origin a ceremony signs for is never one the page supplied. The name is
+     * read per request, so a rename shows in the very next prompt.
+     */
+    private fun offerPasskeys(running: ProxyBinding) {
+        val origin = Origins.origin(running.label, running.port)
+        withdrawPasskeyBridge = container.passkeys.installer.install(webView, origin) { message, sourceOrigin, reply ->
+            val name = endpoints.selected?.displayName(running.label) ?: running.label
+            passkeys.receive(message, sourceOrigin, PasskeySite(running.label, running.port, name), reply)
+        }
+    }
+
+    /** Withdraw the bridge, and any prompt the departing endpoint's page had raised. */
+    private fun withdrawPasskeys() {
+        passkeys.cancel()
+        withdrawPasskeyBridge?.invoke()
+        withdrawPasskeyBridge = null
+    }
+
     private fun showEntry() {
+        showingSettings(false)
+        settings.visibility = android.view.View.GONE
         entry.visibility = android.view.View.VISIBLE
         webView.visibility = android.view.View.GONE
         entryError.visibility = android.view.View.GONE
@@ -299,22 +363,80 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showWebView() {
+        showingSettings(false)
+        settings.visibility = android.view.View.GONE
         entry.visibility = android.view.View.GONE
         webView.visibility = android.view.View.VISIBLE
     }
 
+    /**
+     * Every endpoint and its passkeys, drawn from the saved state each time
+     * rather than kept up to date: the screen holds nothing that could go stale.
+     */
+    internal fun showSettings() {
+        settingsScreen.render(
+            Settings.model(
+                endpoints = endpoints,
+                identities = endpoints.all.map { container.proxy.identify(it.ticket) },
+                running = binding,
+                passkeys = container.passkeys.store.load(),
+                storage = { container.passkeys.vault.storage(it.alias) },
+            ),
+        )
+        settings.visibility = android.view.View.VISIBLE
+        entry.visibility = android.view.View.GONE
+        webView.visibility = android.view.View.GONE
+        showingSettings(true)
+    }
+
+    /** Back to whatever the list was opened over: the page, or the ticket field when nothing runs. */
+    private fun leaveSettings() {
+        if (binding != null) showWebView() else showEntry()
+    }
+
+    /** The app bar's half of the settings screen: a title saying where you are, and a way out. */
+    private fun showingSettings(shown: Boolean) {
+        supportActionBar?.apply {
+            setDisplayHomeAsUpEnabled(shown)
+            title = getString(if (shown) R.string.menu_settings else R.string.app_name)
+        }
+    }
+
+    private val settingsActions = object : SettingsActions {
+        override fun open(index: Int) {
+            // The one already open is only shown again: reconnecting would
+            // reload a page that is already there.
+            if (index == endpoints.selectedIndex && binding != null) showWebView() else selectEndpoint(index)
+        }
+
+        override fun rename(index: Int, name: String) {
+            endpoints = container.store.update { it.rename(index, name) }
+            showSettings()
+        }
+
+        override fun remove(index: Int) {
+            removeEndpoint(index)
+            // Removing the open endpoint opens another one behind this screen;
+            // stay here while there is still a list to show.
+            if (endpoints.all.isNotEmpty()) showSettings()
+        }
+
+        override fun deletePasskey(credentialId: String) {
+            container.passkeys.store.forget(credentialId, container.passkeys.vault)
+            showSettings()
+        }
+
+        override fun addEndpoint() = showEntry()
+    }
+
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menu.add(Menu.NONE, MENU_RELOAD, 0, R.string.menu_reload)
-        menu.add(Menu.NONE, MENU_ADD, 1, R.string.menu_add)
-        menu.add(Menu.NONE, MENU_SWITCH, 2, R.string.menu_switch)
-        menu.add(Menu.NONE, MENU_REMOVE, 3, R.string.menu_remove)
+        menu.add(Menu.NONE, MENU_SETTINGS, 1, R.string.menu_settings)
         return true
     }
 
     override fun onPrepareOptionsMenu(menu: Menu): Boolean {
         menu.findItem(MENU_RELOAD)?.isEnabled = binding != null
-        menu.findItem(MENU_SWITCH)?.isEnabled = endpoints.all.size > 1
-        menu.findItem(MENU_REMOVE)?.isEnabled = endpoints.selected != null
         return super.onPrepareOptionsMenu(menu)
     }
 
@@ -323,35 +445,27 @@ class MainActivity : AppCompatActivity() {
             webView.reload()
             true
         }
-        MENU_ADD -> {
-            showEntry()
+        MENU_SETTINGS -> {
+            showSettings()
             true
         }
-        MENU_SWITCH -> {
-            showSwitcher()
-            true
-        }
-        MENU_REMOVE -> {
-            removeEndpoint(endpoints.selectedIndex)
+        android.R.id.home -> {
+            leaveSettings()
             true
         }
         else -> super.onOptionsItemSelected(item)
     }
 
-    private fun showSwitcher() {
-        val names = endpoints.all.map { it.name }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle(R.string.menu_switch)
-            .setItems(names) { _, index -> selectEndpoint(index) }
-            .show()
-    }
-
     override fun onBackPressed() {
-        if (webView.visibility == android.view.View.VISIBLE && webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            @Suppress("DEPRECATION")
-            super.onBackPressed()
+        when {
+            settings.visibility == android.view.View.VISIBLE -> leaveSettings()
+            // The ticket field, reached from "Add endpoint" while one is open.
+            entry.visibility == android.view.View.VISIBLE && binding != null -> showWebView()
+            webView.visibility == android.view.View.VISIBLE && webView.canGoBack() -> webView.goBack()
+            else -> {
+                @Suppress("DEPRECATION")
+                super.onBackPressed()
+            }
         }
     }
 
@@ -371,6 +485,7 @@ class MainActivity : AppCompatActivity() {
         // A page waiting on a chooser that will never answer would be stuck.
         pendingFileChooser?.onReceiveValue(null)
         pendingFileChooser = null
+        withdrawPasskeys()
         // Not in onPause: the proxy has to survive the screen going off, or
         // coming back would need a fresh dial for every connection.
         if (isFinishing) container.proxy.stop()
@@ -379,8 +494,6 @@ class MainActivity : AppCompatActivity() {
 
     private companion object {
         const val MENU_RELOAD = 1
-        const val MENU_ADD = 2
-        const val MENU_SWITCH = 3
-        const val MENU_REMOVE = 4
+        const val MENU_SETTINGS = 2
     }
 }

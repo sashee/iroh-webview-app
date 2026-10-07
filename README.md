@@ -3,8 +3,9 @@
 An Android app that browses an ordinary HTTP web app whose only reachable transport is an
 [iroh](https://iroh.computer) endpoint — no public IP, no DNS, no TLS certificate.
 
-Paste a ticket, get a browser pointed at whatever HTTP service sits behind it. It is not
-specific to any one backend; the immediate one is the monitoring platform on the rpi5 in
+Paste a ticket, get a browser pointed at whatever HTTP service sits behind it. Pages can
+sign in with passkeys whose keys stay in the phone's secure hardware: a fingerprint is the
+whole login. It is not specific to any one backend; the immediate one is the monitoring platform on the rpi5 in
 [sashee/nixos-test](https://github.com/sashee/nixos-test), reached through the
 `mp-tunnel-server` unit.
 
@@ -27,6 +28,7 @@ Partial builds, when you want one half:
 ```sh
 nix-build -A rust          # the proxy crate's own test suite, on the host
 nix-build -A nativeLibs    # the cdylibs for arm64-v8a and x86_64
+nix-build -A passkeyScript # the injected passkey script's tests, in Node
 ```
 
 `nix-shell` gives you `gradle` with the Android SDK, signing variables and `JNI_LIBS_DIR`
@@ -51,23 +53,46 @@ Both forms the tooling prints are accepted, as is a bare 64-character endpoint i
 a ticket that carries relay urls: it lets the phone dial without depending on DNS
 discovery, which is the flakiest part of the path on Android.
 
+## Endpoints and passkeys
+
+The menu's **Endpoints and passkeys** screen lists every saved endpoint:
+
+- **Each endpoint:** its name and its origin, `http://<label>.localhost:<port>`, with
+  buttons to open it, rename it or remove it.
+- **Under each endpoint:** its passkeys, with the account, when it was created and where
+  the key is kept ("in the StrongBox security chip" on a Pixel). Each one can be deleted.
+- **Names:** an endpoint the user hasn't named is listed by its label, the same hex its
+  origin starts with.
+- **Removing an endpoint:** this signs you out of it, but its passkeys stay on the phone,
+  listed under "Passkeys without an endpoint". Adding the endpoint again makes them usable
+  again.
+- **Deleting a passkey:** this removes the phone's key. The server's record of it stays,
+  but can never be used.
+
 ## Debugging
 
 ```sh
-adb logcat -s irohbrowser:V     # the Rust half logs here
+adb logcat -s irohbrowser:V     # both halves log here
 ```
+
+iroh's own crates are filtered to Warn. At Info they log every path event and every send,
+which buries everything else. Raise them in `android.rs` when chasing a transport problem.
 
 A connection the proxy drops shows up in the browser as `ERR_SOCKET_NOT_CONNECTED` with no
 explanation, so logcat is the only place the reason exists.
 
 ## What the app does not do
 
-- **No credentials.** It is a browser. Whatever authentication the far side does happens
-  in the page, in the browser's own cookie jar.
+- **No passwords.** It is a browser. Whatever authentication the far side does happens in
+  the page, in the browser's own cookie jar. The app does hold passkey keys, in the Android
+  Keystore, and they sign only after a fingerprint. See DESIGN.md for what a server needs
+  to do to use them.
 - **No HTTP parsing.** The proxy copies bytes. Chunked encoding, `Range`, `Set-Cookie`,
   redirects and keep-alive work because nothing here is a participant in them.
-- **No JavaScript bridge.** The page comes from an arbitrary peer and gets no way into
-  the app process. Asserted in `WebViewConfigTest`.
+- **No JavaScript interface.** The page comes from an arbitrary peer. Its one channel
+  into the app is for passkeys. It is restricted to the endpoint's own origin and carries
+  data, not methods. `addJavascriptInterface` is never used, as `WebViewConfigTest`
+  asserts.
 
 `minSdk` is 34 — this targets one Pixel 6a, not the world.
 
@@ -97,3 +122,29 @@ per-endpoint origins work as designed:
 
 If the first turns out to be no, the fallback is `127.0.0.1` plus profiles, and the cookie
 isolation moves entirely onto the clear-on-switch behaviour that is already there.
+
+### Passkeys
+
+These need `passkey-demo/` behind two tunnels, i.e. two endpoints serving the same demo:
+
+```sh
+nix-shell passkey-demo --run 'passkey-demo/over-iroh.sh .trial/state'
+```
+
+Paste the two tickets it prints into the app. Each check depends on the one before it.
+
+7. Create an account on the first endpoint. The fingerprint prompt names that endpoint and
+   the account. The demo's log line shows `http://<label>.localhost:<port>` as the origin.
+8. Sign out, then sign in with a passkey: one fingerprint, no username typed.
+9. Start a sign-in and cancel the prompt. The page reports `NotAllowedError` and still
+   works.
+10. Kill the app and reopen it: still signed in. Sign out and back in: still one
+    fingerprint.
+11. Switch to the second endpoint and sign in. It is refused with no prompt, because this
+    endpoint has no passkey. Create one there, then switch back: the first endpoint still
+    signs in as before.
+12. Open **Endpoints and passkeys**. Each endpoint lists its own passkey, "in the
+    StrongBox security chip". Remove the second endpoint: its passkey moves to "Passkeys
+    without an endpoint", and the first endpoint's page stays as it was.
+13. Add a fingerprint in Settings, then sign in. It is refused, and the message says
+    adding a fingerprint invalidated the passkey. Creating a new one works.

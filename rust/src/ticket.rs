@@ -98,6 +98,17 @@ pub fn preferred_port(addr: &EndpointAddr) -> u16 {
     (FIRST + hash % COUNT) as u16
 }
 
+/// The label and preferred port of the endpoint `input` names: its origin,
+/// without starting anything.
+///
+/// The app needs this for endpoints that are not running -- to list their
+/// origins and passkeys, and to forget a removed one's site data. Pure, like
+/// the two functions it combines: no endpoint is bound and no network touched.
+pub fn identity(input: &str) -> Result<(String, u16), TicketError> {
+    let addr = parse(input)?;
+    Ok((host_label(&addr), preferred_port(&addr)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +232,30 @@ mod tests {
             let port = preferred_port(&addr);
             assert!((20_000..32_000).contains(&port), "port {port} out of range");
         }
+    }
+
+    #[test]
+    fn the_identity_is_the_label_and_the_preferred_port() {
+        let addr = EndpointAddr::new(an_id());
+        assert_eq!(
+            identity(&an_id().to_string()),
+            Ok((host_label(&addr), preferred_port(&addr))),
+        );
+    }
+
+    #[test]
+    fn a_ticket_and_its_bare_id_have_the_same_identity() {
+        // Otherwise one endpoint pasted two ways would show as two sites, and
+        // removing one would forget the wrong origin.
+        let relay = "https://relay.example/".parse().expect("relay url");
+        let ticket = EndpointTicket::from(EndpointAddr::new(an_id()).with_relay_url(relay));
+        assert_eq!(identity(&ticket.to_string()), identity(&an_id().to_string()));
+    }
+
+    #[test]
+    fn garbage_has_no_identity() {
+        assert_eq!(identity("hello"), Err(TicketError::Unrecognised));
+        assert_eq!(identity(" "), Err(TicketError::Empty));
     }
 
     #[test]

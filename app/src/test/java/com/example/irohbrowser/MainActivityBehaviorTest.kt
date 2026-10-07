@@ -236,7 +236,7 @@ class MainActivityBehaviorTest {
         assertEquals(View.VISIBLE, activity.entryError().visibility)
         assertEquals(View.GONE, activity.webView().visibility)
         assertNull(activity.binding)
-        assertEquals(listOf(Endpoint("ticket-alpha", "ticket-alpha")), activity.endpoints.all)
+        assertEquals(listOf(Endpoint("ticket-alpha")), activity.endpoints.all)
     }
 
     @Test
@@ -248,6 +248,18 @@ class MainActivityBehaviorTest {
         val expected = ApplicationProvider.getApplicationContext<android.content.Context>()
             .getString(R.string.error_bad_ticket)
         assertEquals(expected, activity.entryError().text.toString())
+    }
+
+    @Test
+    fun `a rejected ticket is not saved`() {
+        // It names no endpoint, so it could never open; saving it would only
+        // leave an entry that fails every time it is chosen.
+        harness.proxy.failures["nonsense"] = ProxyError.BadTicket
+        val activity = launch()
+        activity.addEndpoint("nonsense")
+
+        assertTrue(activity.endpoints.all.isEmpty())
+        assertTrue(harness.proxy.startedTickets.isEmpty())
     }
 
     @Test

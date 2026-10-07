@@ -89,6 +89,11 @@ jars apart, so clearing would only throw away a session the user still wants. Th
 anything is forgotten is removing an endpoint, which clears that origin alone
 (`SiteData.clear`) and leaves every other endpoint logged in.
 
+Any endpoint can be removed, not just the open one, because its origin can be worked out
+without running it: `ticket::identity` is the same pure label-and-port derivation, called
+through JNI. Removing an endpoint that is not open leaves the open one's proxy and page
+untouched.
+
 Two things have to hold for a session to survive the process dying, and only one of them is
 ours: `CookieManager.flush()` in `onPause` (persistent cookies are written lazily), and the
 server setting an explicit `Max-Age` or `Expires`. A cookie with neither is a *session*
@@ -114,8 +119,12 @@ cookie and is discarded when the process does, whatever the app does.
   the app plants a random token with `CookieManager.setCookie` on the origin, and the proxy
   requires it in the first request head of each connection. That costs inspecting (not
   rewriting) that head, and is deliberately not built until it is needed.
-- **No `addJavascriptInterface`.** There is no bridge from page JavaScript into the app.
-  `WebViewConfigTest` asserts the compiled class does not so much as reference it.
+- **One bridge from page JavaScript into the app, for passkeys only.** It is a
+  `WebMessageListener` that the WebView restricts to the running endpoint's exact origin.
+  It carries data, not callable methods, and accepts two operations, create and get. Each
+  needs a fingerprint before it signs anything. See [Passkeys](#passkeys).
+  `addJavascriptInterface` is still absent: `WebViewConfigTest` asserts that the compiled
+  classes do not reference it at all.
 - **External links leave the WebView.** `http`/`https` outside our own origin go to the
   real browser; `intent:`, `file:`, `content:`, `javascript:` and `data:` are refused
   outright (`Origins.externalDestination`).
@@ -143,6 +152,69 @@ An upload uses `WebChromeClient.onShowFileChooser` into `OpenMultipleDocuments`.
 subtlety is that a pending `ValueCallback` must always be answered — with null on
 cancellation or teardown — or the page's file input stays disabled for good.
 
+## Passkeys
+
+A page served through the tunnel can create and use passkeys, and a sign-in is a
+fingerprint. The key lives in the phone's secure hardware and only ever signs after one.
+The WebView's own WebAuthn cannot do this here (see the rejected alternatives), so the app
+plays both parts that a browser and its platform would:
+
+- **The page's API** is `assets/passkeys.js`. It is injected at document start, for the
+  running endpoint's origin only, and replaces `navigator.credentials.create` / `get` and
+  `PublicKeyCredential`. It relays each call over a `WebMessageListener` named
+  `__irohPasskeys`, restricted to the same origin. It only translates (ArrayBuffers to
+  base64url and back, error names to exceptions) and decides nothing.
+- **The browser's checks** are `PasskeyRequests`.
+  - The RP ID is the page's host. A page that leaves the RP ID out gets the host; one that
+    names anything else gets a `SecurityError`. That is stricter than a browser, which
+    also accepts a parent domain, but each endpoint is exactly one host.
+  - Only that RP ID's passkeys are offered.
+  - The origin in `clientDataJSON` comes from the running proxy (`PasskeySite`), never
+    from the page.
+- **The authenticator** is `PasskeyAuthenticator` plus an Android Keystore key.
+  - The key is P-256, in StrongBox (the Titan M2) where there is one.
+  - Every single signature needs a strong biometric or the screen lock; there is no
+    "unlocked for 30 seconds" window.
+  - Registration signs too, so the user-verified flag is earned, not claimed.
+  - Attestation is `none`, or `packed` self attestation if the server asks for more. The
+    AAGUID is zero and the signature counter stays at zero.
+
+Every refusal that needs no user (wrong RP ID, unsupported algorithm, no passkey for this
+site, already registered) happens before the prompt. A page cannot make the phone ask for
+a fingerprint on behalf of a request that was going to fail anyway.
+
+**What the server must do.** The RP ID is `<label>.localhost`, and the label comes from the
+tunnel's endpoint id, which a web app behind the tunnel does not know. So the server:
+
+- leaves the RP ID out of its options;
+- records the origin each passkey was registered from, and checks sign-ins against that
+  record, ignoring the port (the preferred port can fall back, see above);
+- accepts registrations only from `http://localhost` and `http://*.localhost`. Those always
+  resolve to the device the browser runs on, so no remote site can phish a registration.
+
+`passkey-demo/` is such a server, and is what the on-device checks use.
+
+**What the bridge exposes.** A page from an arbitrary peer can do two things: raise a
+fingerprint prompt, and, with the user's finger, create or use a passkey for its own host.
+The prompt names the endpoint, so a prompt from the wrong one is visible as such. A page
+cannot reach another endpoint's passkeys. The bridge is installed for one origin and
+withdrawn on every switch, and the RP ID rule and the origin check in `PasskeyBridge` would
+each stop it independently. Other apps on the device do not see the bridge at all: it lives
+in the WebView, not on the loopback port.
+
+**Limits.**
+- Passkeys are bound to this phone. Uninstalling the app or enrolling a new fingerprint
+  ends them (Android invalidates the keys), so a server needs another way in for
+  re-registering.
+- ES256 only.
+- No conditional mediation (autofill-style sign-in): sites are told so and show a button
+  instead.
+- No extensions beyond `credProps`.
+- One ceremony at a time.
+- Removing an endpoint keeps its passkeys. The server still trusts them, and re-adding the
+  endpoint (same id, same host) makes them usable again. Until then the "Endpoints and
+  passkeys" screen lists them as "without an endpoint", where they can be deleted.
+
 ## Android specifics
 
 **DNS.** iroh resolves a bare endpoint id through DNS, and Android has no
@@ -160,7 +232,7 @@ plumbing (`init_hosted`, an extra Gradle artifact).
 
 ## Build
 
-`nix-build` is the whole gate, and CI runs exactly it. Three stages, all offline:
+`nix-build` is the whole gate, and CI runs exactly it. Four stages, all offline:
 
 `minSdk` and `targetSdk` are both 34: the only device this targets runs Android 17, and
 matching them leaves one platform's behaviour to reason about. It also means downloads need
@@ -173,7 +245,11 @@ rather than two.
    [fenix](https://github.com/nix-community/fenix)-pinned toolchain for the Android
    `rust-std` and the NDK from `androidenv` for the linker. `cargo-ndk` is not used: it
    only sets the variables that `nix/native-libs.nix` sets directly.
-3. **the APK** — Gradle resolving from a vendored Maven repository built by
+3. **`-A passkeyScript`** — the injected passkey script's tests, in Node against a fake
+   bridge. Robolectric's WebView runs no JavaScript, so this is the only off-device run of
+   the script inside the gate. (`passkey-demo/check_injected_script.py` runs it in real
+   Chromium, outside the gate.)
+4. **the APK** — Gradle resolving from a vendored Maven repository built by
    `buildGradleApplication`'s `mkM2Repository`, running the Robolectric suite and signing
    with the committed keystore.
 
@@ -207,9 +283,18 @@ boring parts of a browser.
 **Overriding `window.fetch`.** `<img>`, `<link>`, `<script>` and fonts never go through
 `fetch`.
 
-**Passkeys / WebAuthn.** Blocked rather than merely harder: in embedded WebView the origin
-the server sees is `android:apk-key-hash:…` and needs an `assetlinks.json` fetchable at a
-public domain we do not have. Revisit after the domain exists.
+**The WebView's own WebAuthn** (`WebSettingsCompat.setWebAuthenticationSupport`). In "app"
+mode the server sees the origin `android:apk-key-hash:…`, and the passkey must belong to a
+domain that publishes `assetlinks.json` over HTTPS. We have no such domain. In "browser"
+mode the app must be on the privileged-browser list of Google Password Manager (approval
+by form) or of whichever provider the user has. Hence the emulation described under
+[Passkeys](#passkeys).
+
+**Credential Manager with `setOrigin`.** This passes the page's real origin to the user's
+passkey provider. Google Password Manager and Proton Pass refuse a browser that is not on
+their list. Bitwarden and Keyguard accept one after a "trust this browser" prompt. Rejected
+because passkeys would depend on each provider's list, and because a key in the phone's
+own hardware never leaves it, which a synced provider's key does.
 
 **Tailscale or WireGuard instead of all of this.** Genuinely the lowest-effort way to get a
 phone-readable dashboard. Rejected only because iroh-as-transport is a goal in itself here.

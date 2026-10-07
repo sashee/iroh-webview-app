@@ -14,6 +14,7 @@ import android.webkit.WebView
 class AppContainer(
     val store: EndpointStore,
     val proxy: ProxyController,
+    val passkeys: PasskeyPlatform,
     /**
      * How to reach the browser's stored site data. A factory rather than a
      * value because the real one needs the activity's WebView, which does not
@@ -39,6 +40,12 @@ class AppContainer(
             AppContainer(
                 store = EndpointStore.from(context),
                 proxy = NativeProxy,
+                passkeys = PasskeyPlatform(
+                    installer = WebViewPasskeyInstaller,
+                    store = PasskeyStore.from(context),
+                    vault = AndroidKeyVault,
+                    ui = ::BiometricPasskeyUi,
+                ),
             )
     }
 }

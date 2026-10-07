@@ -4,13 +4,26 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * One saved endpoint: what to dial, and what to call it.
+ * One saved endpoint: what to dial, and what the user called it.
  *
  * The ticket is stored verbatim rather than parsed. Only the Rust side knows how
  * to read one, and keeping the original text means a ticket carrying relay urls
  * keeps them — which is what stops a dial from depending on DNS discovery.
+ *
+ * [name] is null until the user gives one. The fallback is computed rather than
+ * stored, so it can be the endpoint's label, which only the Rust side can read
+ * out of a ticket.
  */
-data class Endpoint(val ticket: String, val name: String)
+data class Endpoint(val ticket: String, val name: String? = null) {
+
+    /**
+     * What to call it: the user's name, else the endpoint's label -- the same
+     * hex the page's origin starts with, so the two can be matched by eye.
+     * Every ticket begins with "endpoint", which is why the ticket itself makes
+     * a poor name.
+     */
+    fun displayName(label: String?): String = name ?: label ?: ticket
+}
 
 /**
  * The whole saved state: the endpoints and which one is showing.
@@ -64,9 +77,11 @@ data class Endpoints(
     fun select(index: Int): Endpoints =
         if (index in all.indices) copy(selectedIndex = index) else this
 
+    /** Name the endpoint at [index]; a blank name goes back to the default. */
     fun rename(index: Int, name: String): Endpoints =
         if (index in all.indices) {
-            copy(all = all.mapIndexed { at, e -> if (at == index) e.copy(name = name) else e })
+            val named = name.trim().ifEmpty { null }
+            copy(all = all.mapIndexed { at, e -> if (at == index) e.copy(name = named) else e })
         } else {
             this
         }
@@ -87,7 +102,7 @@ data class Endpoints(
                     val entry = array.optJSONObject(at) ?: return@mapNotNull null
                     val ticket = entry.optString("ticket").takeIf { it.isNotBlank() }
                         ?: return@mapNotNull null
-                    Endpoint(ticket, entry.optString("name").ifBlank { defaultName(ticket) })
+                    Endpoint(ticket, userName(ticket, entry.optString("name")))
                 }
                 val selected = root.optInt("selected", -1)
                 Endpoints(all, if (selected in all.indices) selected else -1)
@@ -96,8 +111,19 @@ data class Endpoints(
             }
         }
 
-        /** A readable stand-in when the user did not name the endpoint. */
-        fun defaultName(ticket: String): String = ticket.take(12)
+        /**
+         * The saved name, if the user chose it. Earlier versions saved the
+         * ticket cut to twelve characters when the user gave none --
+         * "endpointaank", "endpointadbi", impossible to tell apart -- so a
+         * name that is exactly that cut is read as no name at all.
+         */
+        private fun userName(ticket: String, saved: String): String? {
+            val name = saved.trim()
+            val oldDefault = ticket.length > LEGACY_NAME_LENGTH && name == ticket.take(LEGACY_NAME_LENGTH)
+            return name.takeIf { it.isNotEmpty() && !oldDefault }
+        }
+
+        private const val LEGACY_NAME_LENGTH = 12
     }
 
     fun toJson(): String {
@@ -106,7 +132,7 @@ data class Endpoints(
             array.put(
                 JSONObject()
                     .put("ticket", endpoint.ticket)
-                    .put("name", endpoint.name),
+                    .apply { endpoint.name?.let { put("name", it) } },
             )
         }
         return JSONObject()

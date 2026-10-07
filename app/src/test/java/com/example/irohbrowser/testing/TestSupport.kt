@@ -1,15 +1,33 @@
 package com.example.irohbrowser.testing
 
 import android.content.Context
+import android.webkit.WebView
 import androidx.test.core.app.ApplicationProvider
 import com.example.irohbrowser.AppContainer
 import com.example.irohbrowser.EndpointStore
+import com.example.irohbrowser.EndpointIdentity
 import com.example.irohbrowser.Endpoints
+import com.example.irohbrowser.KeyStorage
+import com.example.irohbrowser.KeyVault
+import com.example.irohbrowser.Outcome
+import com.example.irohbrowser.PasskeyError
+import com.example.irohbrowser.PasskeyInstaller
+import com.example.irohbrowser.PasskeyPlatform
+import com.example.irohbrowser.PasskeyPurpose
+import com.example.irohbrowser.PasskeyReceiver
+import com.example.irohbrowser.PasskeyStore
+import com.example.irohbrowser.PasskeyUi
 import com.example.irohbrowser.ProxyBinding
 import com.example.irohbrowser.ProxyController
 import com.example.irohbrowser.ProxyError
 import com.example.irohbrowser.ProxyResult
 import com.example.irohbrowser.SiteData
+import java.security.KeyPair
+import java.security.KeyPairGenerator
+import java.security.Signature
+import java.security.interfaces.ECPublicKey
+import java.security.spec.ECGenParameterSpec
+import kotlin.random.Random
 
 /**
  * A [ProxyController] that records what it was asked to do and hands back a
@@ -50,6 +68,19 @@ class FakeProxy : ProxyController {
     }
 
     /**
+     * A preferred port that `start` never hands out, so a test can tell which
+     * of the two an origin was built from.
+     */
+    override fun identify(ticket: String): EndpointIdentity? =
+        if (failures[ticket] == ProxyError.BadTicket) {
+            null
+        } else {
+            EndpointIdentity(labelFor(ticket), preferredPortFor(ticket))
+        }
+
+    fun preferredPortFor(ticket: String): Int = 20000 + ticket.hashCode().mod(10000)
+
+    /**
      * Stands in for the Rust side's endpoint-id derivation: stable per ticket,
      * distinct between tickets, and a valid DNS label.
      */
@@ -80,6 +111,155 @@ class FakeSiteData : SiteData {
     }
 }
 
+/**
+ * A [KeyVault] with software keys.
+ *
+ * Signs without anyone's finger -- the opposite of the real one, which is the
+ * point: what the tests check is what is signed and when, and that the result
+ * verifies, not the Keystore's own enforcement.
+ */
+class FakeKeyVault : KeyVault {
+    val keys = mutableMapOf<String, KeyPair>()
+
+    /** Aliases whose keys behave as if a new fingerprint had invalidated them. */
+    val invalidated = mutableSetOf<String>()
+
+    /** Make [create] fail, as it does on a phone with no fingerprint or screen lock. */
+    var refuseToCreate = false
+
+    override fun create(alias: String): ECPublicKey {
+        if (refuseToCreate) throw IllegalStateException("no screen lock")
+        val pair = KeyPairGenerator.getInstance("EC")
+            .apply { initialize(ECGenParameterSpec("secp256r1")) }
+            .generateKeyPair()
+        keys[alias] = pair
+        return pair.public as ECPublicKey
+    }
+
+    override fun signer(alias: String): Signature? {
+        if (alias in invalidated) return null
+        val pair = keys[alias] ?: return null
+        return Signature.getInstance("SHA256withECDSA").apply { initSign(pair.private) }
+    }
+
+    override fun delete(alias: String) {
+        keys.remove(alias)
+    }
+
+    override fun storage(alias: String): KeyStorage? = if (alias in keys) KeyStorage.Software else null
+}
+
+/** A [PasskeyUi] whose user does what the test says. */
+class FakePasskeyUi : PasskeyUi {
+    data class Prompt(val purpose: PasskeyPurpose, val account: String, val endpointName: String)
+
+    enum class Verdict { Approve, Refuse, Hold }
+
+    val prompts = mutableListOf<Prompt>()
+
+    /** Every account list the chooser was shown. */
+    val chooserShown = mutableListOf<List<String>>()
+
+    var verdict = Verdict.Approve
+
+    /** The chooser's answer: an index, or null for "declined". */
+    var choice: Int? = 0
+
+    /** Prompts withdrawn by a cancel. */
+    var withdrawn = 0
+        private set
+
+    private var held: (() -> Unit)? = null
+
+    override fun choose(endpointName: String, accounts: List<String>, chosen: (Int?) -> Unit): () -> Unit {
+        chooserShown += accounts
+        chosen(choice)
+        return {}
+    }
+
+    override fun verify(
+        purpose: PasskeyPurpose,
+        account: String,
+        endpointName: String,
+        signature: Signature,
+        done: (Outcome<Signature>) -> Unit,
+    ): () -> Unit {
+        prompts += Prompt(purpose, account, endpointName)
+        val refusal = Outcome.Failed(PasskeyError.notAllowed("cancelled"))
+        when (verdict) {
+            Verdict.Approve -> done(Outcome.Ok(signature))
+            Verdict.Refuse -> done(refusal)
+            Verdict.Hold -> held = { done(Outcome.Ok(signature)) }
+        }
+        // Like BiometricPrompt: withdrawing a prompt still answers it, with an error.
+        return {
+            if (held != null) {
+                held = null
+                withdrawn++
+                done(refusal)
+            }
+        }
+    }
+
+    /** Put a finger on the sensor for a held prompt. */
+    fun approveHeld() {
+        val answer = held ?: error("no prompt is waiting")
+        held = null
+        answer()
+    }
+}
+
+/** A [PasskeyInstaller] that records where the bridge was offered, and lets a test post to it. */
+class FakePasskeyInstaller : PasskeyInstaller {
+    /** Every install and uninstall, in order, as `"install:<origin>"` and `"uninstall:<origin>"`. */
+    val events = mutableListOf<String>()
+
+    /** Act like a WebView without the features the bridge needs. */
+    var supported = true
+
+    var installedOrigin: String? = null
+        private set
+
+    private var receiver: PasskeyReceiver? = null
+
+    override fun install(webView: WebView, origin: String, receive: PasskeyReceiver): (() -> Unit)? {
+        if (!supported) return null
+        events += "install:$origin"
+        installedOrigin = origin
+        receiver = receive
+        return {
+            events += "uninstall:$origin"
+            installedOrigin = null
+            receiver = null
+        }
+    }
+
+    /** Post [message] as a page of [from] would, and return what came back. */
+    fun post(message: String, from: String = installedOrigin ?: error("nothing installed")): List<String> {
+        val replies = mutableListOf<String>()
+        (receiver ?: error("nothing installed"))(message, from) { replies += it }
+        return replies
+    }
+}
+
+/** The passkey half of the container, faked. */
+class FakePasskeys(context: Context) {
+    val installer = FakePasskeyInstaller()
+    val vault = FakeKeyVault()
+    val ui = FakePasskeyUi()
+    val store = PasskeyStore(context.getSharedPreferences("passkeys-test", Context.MODE_PRIVATE))
+    private val random = Random(7)
+
+    val platform = PasskeyPlatform(
+        installer = installer,
+        store = store,
+        vault = vault,
+        ui = { ui },
+        random = random::nextBytes,
+        clock = { 1_700_000_000_000 },
+    )
+}
+
 /** Everything a test needs to drive the activity. */
 class TestHarness(
     val proxy: FakeProxy = FakeProxy(),
@@ -90,15 +270,19 @@ class TestHarness(
     val store: EndpointStore =
         EndpointStore(context.getSharedPreferences("endpoints-test", Context.MODE_PRIVATE))
 
+    val passkeys = FakePasskeys(context)
+
     fun install() {
         store.save(Endpoints())
-        AppContainer.install(AppContainer(store, proxy) { siteData })
+        AppContainer.install(AppContainer(store, proxy, passkeys.platform) { siteData })
     }
 
     /** Seed the saved endpoints before the activity starts. */
-    fun seed(vararg tickets: String, selected: Int = tickets.size - 1) {
+    fun seed(vararg tickets: String, selected: Int = tickets.size - 1, named: Boolean = true) {
         var endpoints = Endpoints()
-        tickets.forEach { endpoints = endpoints.add(com.example.irohbrowser.Endpoint(it, it)) }
+        tickets.forEach {
+            endpoints = endpoints.add(com.example.irohbrowser.Endpoint(it, it.takeIf { named }))
+        }
         store.save(endpoints.select(selected))
     }
 }

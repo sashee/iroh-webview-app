@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>passkey-demo</title>
+<style>
+  body { font: 16px/1.4 system-ui, sans-serif; margin: 0 auto; max-width: 36rem; padding: 1rem; }
+  h1 { font-size: 1.3rem; margin: 0 0 1rem; }
+  section { border: 1px solid #ccc; border-radius: .5rem; padding: .75rem 1rem; margin-bottom: 1rem; }
+  button, input { font: inherit; padding: .6rem .9rem; border-radius: .4rem; }
+  button { border: 1px solid #555; background: #f2f2f2; margin: .25rem .25rem .25rem 0; }
+  input { border: 1px solid #999; width: 100%; box-sizing: border-box; margin-bottom: .5rem; }
+  code, pre { font-size: .85rem; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .ok { color: #1a6b1a; } .err { color: #a11; }
+  [hidden] { display: none; }
+</style>
+</head>
+<body>
+<h1>passkey-demo</h1>
+
+<section>
+  <div id="who">…</div>
+  <div id="signed-out" hidden>
+    <button id="sign-in">Sign in with a passkey</button>
+  </div>
+  <div id="signed-in" hidden>
+    <button id="sign-out">Sign out</button>
+  </div>
+</section>
+
+<section>
+  <label for="username" id="register-label">New account</label>
+  <input id="username" autocomplete="username webauthn" placeholder="username">
+  <button id="register">Create a passkey</button>
+</section>
+
+<section id="passkeys-section" hidden>
+  <strong>Your passkeys</strong>
+  <pre id="passkeys"></pre>
+</section>
+
+<section>
+  <strong>This page</strong>
+  <pre id="environment"></pre>
+</section>
+
+<section>
+  <strong>Log</strong>
+  <pre id="log"></pre>
+</section>
+
+<script>
+"use strict";
+
+// By hand rather than PublicKeyCredential.parseCreationOptionsFromJSON and
+// toJSON(): this is the path the most sites take, and the one an emulation
+// has to get right first.
+const b64url = {
+  encode(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  },
+  decode(text) {
+    const base64 = text.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+    return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0)).buffer;
+  },
+};
+
+async function call(method, path, body) {
+  const response = await fetch(path, {
+    method,
+    headers: body === undefined ? {} : { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+function creationOptions(json) {
+  return {
+    ...json,
+    challenge: b64url.decode(json.challenge),
+    user: { ...json.user, id: b64url.decode(json.user.id) },
+    excludeCredentials: (json.excludeCredentials || []).map((c) => ({ ...c, id: b64url.decode(c.id) })),
+  };
+}
+
+function requestOptions(json) {
+  return {
+    ...json,
+    challenge: b64url.decode(json.challenge),
+    allowCredentials: (json.allowCredentials || []).map((c) => ({ ...c, id: b64url.decode(c.id) })),
+  };
+}
+
+function registrationJSON(credential) {
+  return {
+    id: credential.id,
+    rawId: b64url.encode(credential.rawId),
+    type: credential.type,
+    authenticatorAttachment: credential.authenticatorAttachment || undefined,
+    clientExtensionResults: credential.getClientExtensionResults(),
+    response: {
+      clientDataJSON: b64url.encode(credential.response.clientDataJSON),
+      attestationObject: b64url.encode(credential.response.attestationObject),
+      transports: credential.response.getTransports ? credential.response.getTransports() : [],
+    },
+  };
+}
+
+function authenticationJSON(credential) {
+  const { response } = credential;
+  return {
+    id: credential.id,
+    rawId: b64url.encode(credential.rawId),
+    type: credential.type,
+    authenticatorAttachment: credential.authenticatorAttachment || undefined,
+    clientExtensionResults: credential.getClientExtensionResults(),
+    response: {
+      clientDataJSON: b64url.encode(response.clientDataJSON),
+      authenticatorData: b64url.encode(response.authenticatorData),
+      signature: b64url.encode(response.signature),
+      userHandle: response.userHandle ? b64url.encode(response.userHandle) : undefined,
+    },
+  };
+}
+
+async function register(username) {
+  const options = await call("POST", "/api/register/options", { username });
+  const credential = await navigator.credentials.create({ publicKey: creationOptions(options) });
+  return call("POST", "/api/register/verify", registrationJSON(credential));
+}
+
+async function signIn() {
+  const options = await call("POST", "/api/login/options", {});
+  const credential = await navigator.credentials.get({ publicKey: requestOptions(options) });
+  return call("POST", "/api/login/verify", authenticationJSON(credential));
+}
+
+const signOut = () => call("POST", "/api/logout", {});
+const whoami = () => call("GET", "/api/me");
+
+// For check_chromium.py, which drives the same functions the buttons do.
+window.passkeyDemo = { register, signIn, signOut, whoami };
+
+const $ = (id) => document.getElementById(id);
+
+function log(text, kind) {
+  const line = document.createElement("div");
+  line.className = kind || "";
+  line.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+  $("log").prepend(line);
+}
+
+function describe(error) {
+  // A DOMException's name is the useful part: NotAllowedError is a cancelled
+  // or refused prompt, SecurityError a bad RP ID, and so on.
+  return error && error.name && error.name !== "Error" ? `${error.name}: ${error.message}` : String(error.message || error);
+}
+
+async function refresh() {
+  const { user, passkeys } = await whoami();
+  $("who").textContent = user ? `Signed in as ${user}` : "Not signed in";
+  $("signed-in").hidden = !user;
+  $("signed-out").hidden = !!user;
+  $("register-label").textContent = user ? "Add a passkey to this account" : "New account";
+  if (user) $("username").value = user;
+  $("username").readOnly = !!user;
+  $("passkeys-section").hidden = !user;
+  $("passkeys").textContent = passkeys
+    .map((p) => [
+      `${p.id.slice(0, 16)}…`,
+      `  registered from ${p.site} (rpId ${p.rpId})`,
+      `  created ${new Date(p.created * 1000).toLocaleString()}`,
+      `  last used ${p.lastUsed ? new Date(p.lastUsed * 1000).toLocaleString() : "never"}, sign count ${p.signCount}`,
+    ].join("\n"))
+    .join("\n\n") || "none";
+}
+
+async function action(label, run) {
+  try {
+    const result = await run();
+    log(`${label}: ok${result && result.user ? ` (${result.user})` : ""}`, "ok");
+  } catch (error) {
+    log(`${label} failed -- ${describe(error)}`, "err");
+  }
+  await refresh();
+}
+
+$("sign-in").onclick = () => action("sign in", signIn);
+$("sign-out").onclick = () => action("sign out", signOut);
+$("register").onclick = () => action("create passkey", () => register($("username").value));
+
+(async () => {
+  const platform = window.PublicKeyCredential && PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable
+    ? await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().catch(describe)
+    : "n/a";
+  $("environment").textContent = [
+    `origin: ${location.origin}`,
+    `secure context: ${window.isSecureContext}`,
+    `PublicKeyCredential: ${typeof window.PublicKeyCredential}`,
+    `platform authenticator: ${platform}`,
+  ].join("\n");
+  await refresh();
+})();
+</script>
+</body>
+</html>
