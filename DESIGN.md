@@ -119,6 +119,29 @@ cookie and is discarded when the process does, whatever the app does.
   the app plants a random token with `CookieManager.setCookie` on the origin, and the proxy
   requires it in the first request head of each connection. That costs inspecting (not
   rewriting) that head, and is deliberately not built until it is needed.
+- **Nothing the WebView does leaves the device except through the tunnel.** The page comes
+  from an arbitrary peer. Anything it names on another host would otherwise be fetched
+  straight from the internet: an image, a font, a beacon, a form post. That host would
+  learn the phone's address and what the page is. Three layers stop it, each covering what
+  the one before cannot see (`Confinement`):
+  - `Origins.mayRequest` refuses every request that is not the running proxy's origin,
+    with a 403, and logs it to logcat. `data:`, `blob:` and `about:` pass, because
+    fetching one sends nothing anywhere. It runs in `shouldInterceptRequest` and the
+    service-worker client, which between them see subresources, fetches, forms, frames and
+    navigations however they started.
+  - A process-wide proxy override, set in `IrohBrowserApp` before the first page, sends
+    every connection except to `*.localhost` to `127.0.0.1:1`. No app may listen there,
+    so each one is refused at once. It catches what neither hook sees: WebSockets, and the
+    connections the browser opens speculatively. Chromium's own exceptions for loopback
+    and link-local hosts are removed (`<-loopback>`), and `*.localhost` is bypassed after
+    that, because later bypass rules override earlier ones. iroh is in the Rust half and
+    never passes through the override.
+  - `assets/no-webrtc.js` removes `RTCPeerConnection` at document start, in every frame
+    it reaches, because WebRTC's UDP goes beneath both. This one is best-effort: a page
+    set on having WebRTC can find a fresh copy in an iframe the script never ran in.
+
+  A page that wants a CDN font or an external login therefore does not get it. The answer
+  is to serve it from the far side.
 - **The WebView talks to loopback only at the running proxy's exact origin.** Cookies are
   keyed by host, not port (RFC 6265), and any app can listen on a loopback port that our
   proxy isn't holding. Without this rule, two paths would send an endpoint's session to
@@ -129,17 +152,19 @@ cookie and is discarded when the process does, whatever the app does.
   `Origins.mayRequest` is checked on every request, in `shouldInterceptRequest` and in the
   service-worker client, so it holds however a navigation started. The history is dropped
   after a switch, and a restored page on the wrong port is replaced by the front page.
-  WebSockets don't pass through either hook, but only a page already loaded from the
-  endpoint can open one.
+  WebSockets don't pass through either hook, and the proxy override lets `*.localhost`
+  through on every port. But only a page already loaded from the endpoint can open one.
 - **One bridge from page JavaScript into the app, for passkeys only.** It is a
   `WebMessageListener` that the WebView restricts to the running endpoint's exact origin.
   It carries data, not callable methods, and accepts two operations, create and get. Each
   needs a fingerprint before it signs anything. See [Passkeys](#passkeys).
   `addJavascriptInterface` is still absent: `WebViewConfigTest` asserts that the compiled
   classes do not reference it at all.
-- **External links leave the WebView.** `http`/`https` outside our own origin go to the
-  real browser; `intent:`, `file:`, `content:`, `javascript:` and `data:` are refused
-  outright (`Origins.externalDestination`).
+- **External links leave the WebView, when the user taps them.** `http`/`https` outside
+  our own origin go to the real browser, but only with a gesture
+  (`WebResourceRequest.hasGesture`). Without one, a page could send itself elsewhere on a
+  timer and carry whatever it liked out in the URL. `intent:`, `file:`, `content:`,
+  `javascript:` and `data:` are refused outright (`Origins.externalDestination`).
 - **Cleartext for loopback only**, via the network security config. A page that links to
   an `http://` site elsewhere still cannot load it.
 - **No backups.** The tickets are addresses rather than secrets, but the cookie jar beside
@@ -288,9 +313,9 @@ rather than two.
    [fenix](https://github.com/nix-community/fenix)-pinned toolchain for the Android
    `rust-std` and the NDK from `androidenv` for the linker. `cargo-ndk` is not used: it
    only sets the variables that `nix/native-libs.nix` sets directly.
-3. **`-A passkeyScript`** — the injected passkey script's tests, in Node against a fake
-   bridge. Robolectric's WebView runs no JavaScript, so this is the only off-device run of
-   the script inside the gate.
+3. **`-A pageScripts`** — the injected scripts' tests, in Node: passkeys against a fake
+   bridge, and the one that removes WebRTC. Robolectric's WebView runs no JavaScript, so
+   this is the only off-device run of the scripts inside the gate.
 4. **the APK** — Gradle resolving from a vendored Maven repository built by
    `buildGradleApplication`'s `mkM2Repository`, running the Robolectric suite and signing
    with the committed keystore.

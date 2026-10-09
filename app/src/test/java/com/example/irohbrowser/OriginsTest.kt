@@ -21,7 +21,8 @@ class OriginsTest {
     private val label = "a1b2c3d4e5f60718"
     private val port = 41234
 
-    private fun destination(url: String?) = Origins.externalDestination(url, label, port)
+    private fun destination(url: String?, byUser: Boolean = true) =
+        Origins.externalDestination(url, label, port, byUser)
 
     @Test
     fun `the url is a loopback origin naming the endpoint`() {
@@ -86,6 +87,18 @@ class OriginsTest {
     }
 
     @Test
+    fun `an external page the page sent itself to, with no tap, is refused`() {
+        // A redirect on a timer would otherwise open the real browser with
+        // whatever the page put in the URL.
+        assertEquals(Origins.Destination.Refuse, destination("https://example.com/?data=x", byUser = false))
+    }
+
+    @Test
+    fun `our own pages stay in the webview with or without a tap`() {
+        assertEquals(Origins.Destination.Keep, destination("http://$label.localhost:$port/x", byUser = false))
+    }
+
+    @Test
     fun `intent urls are refused outright`() {
         // An intent: URL can start arbitrary components of other apps.
         assertEquals(
@@ -127,37 +140,23 @@ class OriginsTest {
     private val running = ProxyBinding(label, port)
 
     @Test
-    fun `loopback is every way of naming this device`() {
+    fun `no other way of naming this device may be requested`() {
+        // Each of these reaches whatever is listening on the device, and some
+        // carry an endpoint's cookies there.
         listOf(
             "http://localhost/",
             "http://localhost:8080/x",
             "http://$label.localhost:1/",
             "http://anything.else.localhost/",
             "http://LOCALHOST./",
-            "http://127.0.0.1:41234/",
+            "http://127.0.0.1:$port/",
             "http://127.1.2.3/",
-            "http://0.0.0.0:41234/",
-            "http://[::1]:41234/",
-            "http://[::ffff:7f00:1]:41234/",
+            "http://0.0.0.0:$port/",
+            "http://[::1]:$port/",
+            "http://[::ffff:7f00:1]:$port/",
             "http://[::ffff:127.0.0.1]/",
             "ws://$label.localhost:1/",
-        ).forEach { assertTrue(it, Origins.isLoopback(it)) }
-    }
-
-    @Test
-    fun `other hosts are not loopback`() {
-        listOf(
-            "https://example.com/",
-            "http://localhost.example.com/",
-            "http://notlocalhost/",
-            "http://127.example.com/",
-            "http://128.0.0.1/",
-            "http://[::2]/",
-            "data:text/plain,hi",
-            "about:blank",
-            "nonsense",
-            null,
-        ).forEach { assertFalse("$it", Origins.isLoopback(it)) }
+        ).forEach { assertFalse(it, Origins.mayRequest(it, running)) }
     }
 
     @Test
@@ -186,9 +185,33 @@ class OriginsTest {
     }
 
     @Test
-    fun `requests off the device are left alone`() {
-        assertTrue(Origins.mayRequest("https://example.com/font.woff2", running))
-        assertTrue(Origins.mayRequest("https://example.com/", null))
-        assertTrue(Origins.mayRequest(null, running))
+    fun `nothing off the device may be requested`() {
+        // It would not go through the tunnel, and would tell another host the
+        // phone's address and what the page is.
+        listOf(
+            "https://example.com/font.woff2",
+            "http://example.com/",
+            "https://$label.localhost:$port/",
+            "http://192.168.1.1/",
+            "http://169.254.169.254/latest/meta-data",
+            "http://localhost.example.com/",
+            "ftp://example.com/x",
+            "file:///etc/hosts",
+            "content://com.example/secret",
+            "nonsense",
+            null,
+        ).forEach { assertFalse("$it", Origins.mayRequest(it, running)) }
+        assertFalse(Origins.mayRequest("https://example.com/", null))
+    }
+
+    @Test
+    fun `what the page or the browser made itself may be fetched`() {
+        // Inline images and fonts, object URLs, empty frames: no request leaves.
+        listOf(
+            "data:image/png;base64,iVBORw0KGgo=",
+            "DATA:text/plain,hi",
+            "blob:http://$label.localhost:$port/0b5e0e3c-6c1a-4d4b-9f39-2f4f0e0b6f7a",
+            "about:blank",
+        ).forEach { assertTrue(it, Origins.mayRequest(it, running)) }
     }
 }

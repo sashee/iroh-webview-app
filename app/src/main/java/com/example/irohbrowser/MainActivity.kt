@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -165,7 +166,7 @@ class MainActivity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(
                 view: WebView,
                 request: WebResourceRequest,
-            ): Boolean = handleNavigation(request.url?.toString())
+            ): Boolean = handleNavigation(request.url?.toString(), byUser = request.hasGesture())
 
             // Every request, before it leaves: subresources and fetches, and
             // also back/forward and restored pages, which never reach
@@ -184,6 +185,13 @@ class MainActivity : AppCompatActivity() {
         // A page's service worker fetches through its own client, not the
         // WebViewClient. The route is process-wide; onDestroy removes it.
         container.serviceWorkers.route(::refusal)
+        // WebRTC's UDP passes beneath both the request check and the proxy
+        // override (Confinement), so pages do not get it. Before anything
+        // loads: the script reaches only documents that start after it.
+        container.pageScripts.install(
+            webView,
+            assets.open(Confinement.SCRIPT_ASSET).bufferedReader().use { it.readText() },
+        )
         // Without this a download link does nothing at all -- no error, no file.
         webView.setDownloadListener { url, _, contentDisposition, mimeType, _ ->
             startDownload(url, contentDisposition, mimeType)
@@ -246,15 +254,18 @@ class MainActivity : AppCompatActivity() {
      * Returns true when the WebView should *not* load it, which is
      * `shouldOverrideUrlLoading`'s convention.
      */
-    internal fun handleNavigation(url: String?): Boolean {
+    private fun handleNavigation(url: String?, byUser: Boolean): Boolean {
         val current = binding ?: return true
-        return when (Origins.externalDestination(url, current.label, current.port)) {
+        return when (Origins.externalDestination(url, current.label, current.port, byUser)) {
             Origins.Destination.Keep -> false
             Origins.Destination.OpenExternally -> {
                 openExternally(url)
                 true
             }
-            Origins.Destination.Refuse -> true
+            Origins.Destination.Refuse -> {
+                Log.i(LOG_TAG, "refused a navigation to ${forLog(url)}")
+                true
+            }
         }
     }
 
@@ -315,23 +326,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Null to let a request to [url] through; a refusal when it is loopback
-     * but not the running proxy's origin -- where the endpoint's cookies would
-     * go to whatever else is listening. See [Origins.mayRequest].
+     * Null to let a request to [url] through; a refusal when it is not the
+     * running proxy's origin -- where it would leave the device, or take the
+     * endpoint's cookies to whatever else is listening. See [Origins.mayRequest].
+     *
+     * The page sees only the 403, so logcat says what was refused.
      */
-    private fun refusal(url: String?): WebResourceResponse? =
-        if (Origins.mayRequest(url, binding)) {
-            null
-        } else {
-            WebResourceResponse(
-                "text/plain",
-                "utf-8",
-                403,
-                "Forbidden",
-                mapOf("Cache-Control" to "no-store"),
-                ByteArrayInputStream("Refused: not the origin of the endpoint on screen.".toByteArray()),
-            )
-        }
+    private fun refusal(url: String?): WebResourceResponse? {
+        if (Origins.mayRequest(url, binding)) return null
+        Log.i(LOG_TAG, "refused a request to ${forLog(url)}")
+        return WebResourceResponse(
+            "text/plain",
+            "utf-8",
+            403,
+            "Forbidden",
+            mapOf("Cache-Control" to "no-store"),
+            ByteArrayInputStream("Refused: not the origin of the endpoint on screen.".toByteArray()),
+        )
+    }
+
+    /** The scheme and host of [url], for a log line: the rest may hold a token. */
+    private fun forLog(url: String?): String =
+        runCatching { Uri.parse(url) }.getOrNull()
+            ?.let { listOfNotNull(it.scheme, it.host).joinToString("://") }
+            ?: "?"
 
     /**
      * Point the browser at the selected endpoint.

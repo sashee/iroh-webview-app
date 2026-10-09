@@ -27,9 +27,6 @@ import javax.crypto.Mac
 import javax.crypto.SecretKey
 import javax.crypto.SecretKeyFactory
 
-/** The logcat tag the Rust half logs under too, so one filter shows both. */
-private const val LOG_TAG = "irohbrowser"
-
 /*
  * The platform half of passkeys: Keystore, BiometricPrompt, the WebView
  * bridge. Thin on purpose, like NativeProxy -- every decision is in

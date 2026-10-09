@@ -16,6 +16,7 @@ class AppContainer(
     val proxy: ProxyController,
     val passkeys: PasskeyPlatform,
     val serviceWorkers: ServiceWorkerRequests,
+    val pageScripts: PageScripts,
     /**
      * How to reach the browser's stored site data. A factory rather than a
      * value because the real one needs the activity's WebView, which does not
@@ -48,6 +49,7 @@ class AppContainer(
                     ui = ::BiometricPasskeyUi,
                 ),
                 serviceWorkers = PlatformServiceWorkerRequests,
+                pageScripts = WebViewPageScripts,
             )
     }
 }

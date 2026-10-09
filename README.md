@@ -28,7 +28,7 @@ Partial builds, when you want one half:
 ```sh
 nix-build -A rust          # the proxy crate's own test suite, on the host
 nix-build -A nativeLibs    # the cdylibs for arm64-v8a and x86_64
-nix-build -A passkeyScript # the injected passkey script's tests, in Node
+nix-build -A pageScripts   # the injected page scripts' tests, in Node
 ```
 
 `nix-shell` gives you `gradle` with the Android SDK, signing variables and `JNI_LIBS_DIR`
@@ -175,3 +175,19 @@ which must show up in the log. That proves the listener was really there.
     proxy logs "preferred port … unavailable", the page comes back on another port, and the
     log shows nothing but the probe. (A build from before this fix delivers `GET /` with
     the endpoint's cookies to the listener here.)
+
+### Off the device
+
+The WebView must reach nothing but the tunnel (DESIGN.md, Security). These need a page
+behind the endpoint that tries each of the following and prints what happened. Run
+`adb logcat -s irohbrowser:V` alongside.
+
+17. On launch, logcat shows `WebView network confined to *.localhost`. The endpoint's own
+    pages load as before, and so do their own WebSockets, if they have any.
+18. An `<img>` from another host does not load, and logcat shows `refused a request to
+    https://<host>`.
+19. `new WebSocket("wss://<another host>/")` fails with an `error` event, and `typeof
+    RTCPeerConnection` is `"undefined"`.
+20. Tap a link to another site: the real browser opens it. A page that sets `location` to
+    another site on load, with no tap, stays where it is, and logcat shows `refused a
+    navigation to https://<host>`.

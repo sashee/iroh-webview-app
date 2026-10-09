@@ -1,11 +1,10 @@
 package com.example.irohbrowser
 
-import android.net.Uri
 import android.os.Bundle
-import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.example.irohbrowser.testing.TestHarness
+import com.example.irohbrowser.testing.request
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -57,15 +56,6 @@ class LoopbackGuardTest {
     private fun MainActivity.client(): WebViewClient = shadowOf(webView()).webViewClient
     private fun MainActivity.origin(): String = binding!!.let { Origins.origin(it.label, it.port) }
 
-    private fun request(url: String) = object : WebResourceRequest {
-        override fun getUrl(): Uri = Uri.parse(url)
-        override fun isForMainFrame() = true
-        override fun isRedirect() = false
-        override fun hasGesture() = false
-        override fun getMethod() = "GET"
-        override fun getRequestHeaders(): Map<String, String> = emptyMap()
-    }
-
     private fun MainActivity.intercept(url: String) = client().shouldInterceptRequest(webView(), request(url))
 
     // --- the requests themselves ---
@@ -104,14 +94,13 @@ class LoopbackGuardTest {
     }
 
     @Test
-    fun `other loopback addresses are refused, and the outside world is not`() {
+    fun `other loopback addresses are refused`() {
         harness.seed("ticket-alpha")
         val activity = launch().get()
         val port = activity.binding!!.port
 
         assertNotNull(activity.intercept("http://127.0.0.1:$port/"))
         assertNotNull(activity.intercept("http://localhost:$port/"))
-        assertNull(activity.intercept("https://example.com/style.css"))
     }
 
     @Test

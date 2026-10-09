@@ -1,6 +1,8 @@
 package com.example.irohbrowser.testing
 
 import android.content.Context
+import android.net.Uri
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import androidx.test.core.app.ApplicationProvider
 import com.example.irohbrowser.AppContainer
@@ -11,6 +13,7 @@ import com.example.irohbrowser.KeyOperation
 import com.example.irohbrowser.KeyStorage
 import com.example.irohbrowser.KeyVault
 import com.example.irohbrowser.Outcome
+import com.example.irohbrowser.PageScripts
 import com.example.irohbrowser.PasskeyError
 import com.example.irohbrowser.PasskeyInstaller
 import com.example.irohbrowser.PasskeyPlatform
@@ -337,6 +340,25 @@ class FakeServiceWorkerRequests : ServiceWorkerRequests {
     }
 }
 
+/** Records the scripts installed into pages, in order. */
+class FakePageScripts : PageScripts {
+    val installed = mutableListOf<String>()
+
+    override fun install(webView: WebView, script: String) {
+        installed += script
+    }
+}
+
+/** A main-frame GET of [url], as the WebView hands it to its clients. */
+fun request(url: String, gesture: Boolean = false): WebResourceRequest = object : WebResourceRequest {
+    override fun getUrl(): Uri = Uri.parse(url)
+    override fun isForMainFrame() = true
+    override fun isRedirect() = false
+    override fun hasGesture() = gesture
+    override fun getMethod() = "GET"
+    override fun getRequestHeaders(): Map<String, String> = emptyMap()
+}
+
 /** Everything a test needs to drive the activity. */
 class TestHarness(
     val proxy: FakeProxy = FakeProxy(),
@@ -351,9 +373,11 @@ class TestHarness(
 
     val serviceWorkers = FakeServiceWorkerRequests()
 
+    val pageScripts = FakePageScripts()
+
     fun install() {
         store.save(Endpoints())
-        AppContainer.install(AppContainer(store, proxy, passkeys.platform, serviceWorkers) { siteData })
+        AppContainer.install(AppContainer(store, proxy, passkeys.platform, serviceWorkers, pageScripts) { siteData })
     }
 
     /** Seed the saved endpoints before the activity starts. */

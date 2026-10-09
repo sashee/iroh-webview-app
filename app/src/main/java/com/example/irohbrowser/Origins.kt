@@ -45,46 +45,37 @@ object Origins {
     }
 
     /**
-     * Whether [url] points at this device: `localhost` and every name under it,
-     * the whole 127/8 block, `0.0.0.0`, and `[::1]` with its IPv4-mapped forms.
-     *
-     * Exact rather than generous with hostnames: the WebView canonicalises a
-     * URL before the app sees it, so a loopback address written as a decimal
-     * number or with a trailing dot arrives in one of these forms.
-     */
-    fun isLoopback(url: String?): Boolean {
-        val host = runCatching { Uri.parse(url ?: return false).host }.getOrNull()
-            ?.lowercase()?.trimEnd('.') ?: return false
-        val ipv6 = host.removePrefix("[").removeSuffix("]")
-        // ::ffff:127.0.0.1, which the WebView writes as ::ffff:7f00:1.
-        val mapped = ipv6.takeIf { it.startsWith("::ffff:") }?.removePrefix("::ffff:")
-        return host == "localhost" ||
-            host.endsWith(".localhost") ||
-            IPV4_LOOPBACK.matches(host) ||
-            host == "0.0.0.0" ||
-            ipv6 == "::1" ||
-            (mapped != null && (IPV4_LOOPBACK.matches(mapped) || mapped.startsWith("7f")))
-    }
-
-    /**
      * Whether the WebView may send a request to [url] while [running] is the
      * proxy behind the page.
      *
-     * Anything that is not loopback may go. Loopback may go only to the running
-     * proxy's exact origin, port included, because cookies are keyed by host
-     * and not by port: a request to `<label>.localhost` on any other port
-     * carries that endpoint's session to whatever is listening there, and any
-     * app on the device can listen on a loopback port the proxy is not holding.
-     * History navigation and restored pages never pass through
-     * [externalDestination], so this is checked on every request instead.
+     * Only to the running proxy's exact origin, port included. Nothing else
+     * goes through the tunnel, so anything else would leave the device: an
+     * image or a beacon on another host tells it the phone's address and what
+     * the page is, and the page comes from an arbitrary peer. On loopback the
+     * port matters as much, because cookies are keyed by host and not by
+     * port: a request to `<label>.localhost` on any other port carries that
+     * endpoint's session to whatever is listening there, and any app on the
+     * device can listen on a loopback port the proxy is not holding.
+     *
+     * `data:`, `blob:` and `about:` pass: the page or the browser made them,
+     * and fetching one sends nothing anywhere. History navigation and restored
+     * pages never pass through [externalDestination], so this is checked on
+     * every request instead.
      */
     fun mayRequest(url: String?, running: ProxyBinding?): Boolean =
-        !isLoopback(url) || (running != null && isOwnOrigin(url, running.label, running.port))
+        (running != null && isOwnOrigin(url, running.label, running.port)) || scheme(url) in LOCAL_SCHEMES
 
-    private val IPV4_LOOPBACK = Regex("""127\.\d{1,3}\.\d{1,3}\.\d{1,3}""")
+    private val LOCAL_SCHEMES = setOf("data", "blob", "about")
+
+    private fun scheme(url: String?): String? =
+        runCatching { Uri.parse(url ?: return null).scheme }.getOrNull()?.lowercase()
 
     /**
      * Whether a navigation should be handed to the real browser.
+     *
+     * Only when [byUser]: a tap, not the page sending itself somewhere. A page
+     * could otherwise open the real browser on a timer, carrying whatever it
+     * likes in the URL to wherever it likes.
      *
      * Anything that is not an ordinary web page is refused outright rather than
      * forwarded: `intent:` can start arbitrary components, `file:` and
@@ -92,12 +83,11 @@ object Origins {
      * whatever page is loaded. None of them should be reachable from a page
      * served by an arbitrary peer.
      */
-    fun externalDestination(url: String?, label: String, port: Int): Destination {
+    fun externalDestination(url: String?, label: String, port: Int, byUser: Boolean): Destination {
         if (url.isNullOrBlank()) return Destination.Refuse
         if (isOwnOrigin(url, label, port)) return Destination.Keep
-        val scheme = runCatching { Uri.parse(url).scheme }.getOrNull()?.lowercase()
-        return when (scheme) {
-            "http", "https" -> Destination.OpenExternally
+        return when (scheme(url)) {
+            "http", "https" -> if (byUser) Destination.OpenExternally else Destination.Refuse
             else -> Destination.Refuse
         }
     }

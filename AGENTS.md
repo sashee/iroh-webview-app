@@ -102,6 +102,15 @@ A restored WebView starts loading at once, on its own thread, so `openSelected` 
 the state only after the proxy is running and the passkey script is installed. Restoring
 earlier, as `onCreate` once did, gets the restored page refused.
 
+**The WebView reaches nothing but the tunnel, in three layers** (`Confinement.kt`):
+`Origins.mayRequest` refuses every request that is not the running proxy's origin; a
+process-wide proxy override, set in `IrohBrowserApp`, sends everything but `*.localhost` to
+a dead port, which is what stops WebSockets; `no-webrtc.js` removes `RTCPeerConnection`.
+The bypass rules are order-sensitive: Chromium lets later rules override earlier ones, so
+`<-loopback>` must come before `*.localhost`, or the tunnel itself goes to the dead port.
+External links open only on a tap (`hasGesture`). A page wanting a CDN font or an external
+login is expected to fail. Serve it from the far side; do not loosen the check.
+
 **Every endpoint has an origin, running or not.** `ProxyController.identify` reads it from
 the ticket in Rust, starting nothing. Removing an endpoint that is not on screen depends
 on it: its site data is cleared at its preferred port. The open endpoint uses the running
@@ -150,6 +159,8 @@ Kotlin (`app/src/main/java/com/example/irohbrowser/`):
   live. Most of the behaviour worth testing is here rather than in the activity.
 - `Origins.kt` — which URLs are ours and where the rest go. The browsing-direction
   security boundary.
+- `Confinement.kt` — keeping the WebView off the network: the proxy override, and the seam
+  that installs `assets/no-webrtc.js`.
 - `MainActivity.kt` — orchestration only.
 - `AppContainer.kt` — dependency seam; tests install their own.
 - `Settings.kt` — what the "Endpoints and passkeys" screen lists: each endpoint's origin,
@@ -213,7 +224,7 @@ detail, so logcat is the only place the reason exists.
 - Passkeys are tested at three levels:
   - **`PasskeyAuthenticatorTest`**: whole ceremonies with software keys, verified by
     webauthn4j acting as the server.
-  - **`app/src/test/js/passkeys.test.mjs`** (Node, `nix-build -A passkeyScript`): the
+  - **`app/src/test/js/passkeys.test.mjs`** (Node, `nix-build -A pageScripts`): the
     injected script against a fake bridge.
   - **On the device** (README.md): the Keystore, BiometricPrompt and the WebView's bridge.
 

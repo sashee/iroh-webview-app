@@ -9,6 +9,7 @@ import android.widget.TextView
 import android.webkit.WebView
 import androidx.test.core.app.ApplicationProvider
 import com.example.irohbrowser.testing.TestHarness
+import com.example.irohbrowser.testing.request
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -58,6 +59,10 @@ class MainActivityBehaviorTest {
     private fun MainActivity.entry() = findViewById<LinearLayout>(R.id.entry)
     private fun MainActivity.entryError() = findViewById<TextView>(R.id.entry_error)
     private fun MainActivity.loadedUrl() = shadowOf(webView()).lastLoadedUrl
+
+    /** Ask the activity's WebViewClient about a navigation, as the WebView would. */
+    private fun MainActivity.navigate(url: String, tapped: Boolean) =
+        shadowOf(webView()).webViewClient.shouldOverrideUrlLoading(webView(), request(url, gesture = tapped))
 
     @Test
     fun `first run shows the ticket field and starts nothing`() {
@@ -282,20 +287,33 @@ class MainActivityBehaviorTest {
         val activity = launch()
         val binding = activity.binding!!
 
-        assertFalse(activity.handleNavigation(Origins.url(binding.label, binding.port) + "page"))
+        assertFalse(activity.navigate(Origins.url(binding.label, binding.port) + "page", tapped = false))
     }
 
     @Test
-    fun `an external link opens the real browser`() {
+    fun `a tapped external link opens the real browser`() {
         harness.seed("ticket-alpha")
         val activity = launch()
 
-        assertTrue(activity.handleNavigation("https://example.com/docs"))
+        assertTrue(activity.navigate("https://example.com/docs", tapped = true))
 
         val started = shadowOf(ApplicationProvider.getApplicationContext<android.app.Application>())
             .nextStartedActivity
         assertEquals(Intent.ACTION_VIEW, started.action)
         assertEquals("https://example.com/docs", started.data.toString())
+    }
+
+    @Test
+    fun `a page sending itself elsewhere with no tap opens nothing`() {
+        // On a timer, say, with whatever it likes in the URL.
+        harness.seed("ticket-alpha")
+        val activity = launch()
+        val application = ApplicationProvider.getApplicationContext<android.app.Application>()
+        while (shadowOf(application).nextStartedActivity != null) Unit
+
+        assertTrue(activity.navigate("https://example.com/?stolen=1", tapped = false))
+
+        assertNull(shadowOf(application).nextStartedActivity)
     }
 
     @Test
@@ -306,7 +324,7 @@ class MainActivityBehaviorTest {
         // Drain anything the launch itself queued.
         while (shadowOf(application).nextStartedActivity != null) Unit
 
-        assertTrue(activity.handleNavigation("intent://evil#Intent;scheme=http;end"))
+        assertTrue(activity.navigate("intent://evil#Intent;scheme=http;end", tapped = true))
 
         assertNull(shadowOf(application).nextStartedActivity)
     }
@@ -314,6 +332,6 @@ class MainActivityBehaviorTest {
     @Test
     fun `navigation is refused while nothing is running`() {
         val activity = launch()
-        assertTrue(activity.handleNavigation("http://anything.localhost:1/"))
+        assertTrue(activity.navigate("http://anything.localhost:1/", tapped = true))
     }
 }
