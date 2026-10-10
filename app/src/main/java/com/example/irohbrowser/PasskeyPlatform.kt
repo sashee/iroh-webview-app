@@ -1,7 +1,6 @@
 package com.example.irohbrowser
 
 import android.app.Activity
-import android.webkit.WebView
 import java.security.SecureRandom
 import java.security.Signature
 import java.security.interfaces.ECPublicKey
@@ -102,22 +101,9 @@ interface PasskeyUi {
     ): () -> Unit
 }
 
-/** A message from a page: its text, the origin the WebView reports for it, and a way to answer. */
-typealias PasskeyReceiver = (message: String, sourceOrigin: String, reply: (String) -> Unit) -> Unit
-
-/** Making the bridge, and the script that uses it, available to one origin's pages. */
-fun interface PasskeyInstaller {
-    /**
-     * Install for pages of exactly [origin]. Returns how to uninstall, or null
-     * when this WebView lacks what the bridge needs -- in which case pages see
-     * no passkey support at all, rather than a broken one.
-     */
-    fun install(webView: WebView, origin: String, receive: PasskeyReceiver): (() -> Unit)?
-}
-
 /** Everything passkeys need from the platform, replaced as a unit by tests. */
 class PasskeyPlatform(
-    val installer: PasskeyInstaller,
+    val installer: BridgeInstaller,
     val store: PasskeyStore,
     val vault: KeyVault,
     /** A factory: the real UI needs the activity, which does not exist when the container is built. */

@@ -6,6 +6,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import androidx.test.core.app.ApplicationProvider
 import com.example.irohbrowser.AppContainer
+import com.example.irohbrowser.BridgeInstaller
+import com.example.irohbrowser.BridgeReceiver
 import com.example.irohbrowser.EndpointStore
 import com.example.irohbrowser.EndpointIdentity
 import com.example.irohbrowser.Endpoints
@@ -15,10 +17,8 @@ import com.example.irohbrowser.KeyVault
 import com.example.irohbrowser.Outcome
 import com.example.irohbrowser.PageScripts
 import com.example.irohbrowser.PasskeyError
-import com.example.irohbrowser.PasskeyInstaller
 import com.example.irohbrowser.PasskeyPlatform
 import com.example.irohbrowser.PasskeyPurpose
-import com.example.irohbrowser.PasskeyReceiver
 import com.example.irohbrowser.PasskeyStore
 import com.example.irohbrowser.PasskeyUi
 import com.example.irohbrowser.ProxyBinding
@@ -271,8 +271,8 @@ class FakePasskeyUi : PasskeyUi {
     }
 }
 
-/** A [PasskeyInstaller] that records where the bridge was offered, and lets a test post to it. */
-class FakePasskeyInstaller : PasskeyInstaller {
+/** A [BridgeInstaller] that records where the bridge was offered, and lets a test post to it. */
+class FakeBridgeInstaller : BridgeInstaller {
     /** Every install and uninstall, in order, as `"install:<origin>"` and `"uninstall:<origin>"`. */
     val events = mutableListOf<String>()
 
@@ -282,12 +282,12 @@ class FakePasskeyInstaller : PasskeyInstaller {
     var installedOrigin: String? = null
         private set
 
-    private var receiver: PasskeyReceiver? = null
+    private var receiver: BridgeReceiver? = null
 
     /** Runs as each install begins, so a test can see what had happened by then. */
     var onInstall: () -> Unit = {}
 
-    override fun install(webView: WebView, origin: String, receive: PasskeyReceiver): (() -> Unit)? {
+    override fun install(webView: WebView, origin: String, receive: BridgeReceiver): (() -> Unit)? {
         onInstall()
         if (!supported) return null
         events += "install:$origin"
@@ -310,7 +310,7 @@ class FakePasskeyInstaller : PasskeyInstaller {
 
 /** The passkey half of the container, faked. */
 class FakePasskeys(context: Context) {
-    val installer = FakePasskeyInstaller()
+    val installer = FakeBridgeInstaller()
     val vault = FakeKeyVault()
     val ui = FakePasskeyUi()
     val store = PasskeyStore(context.getSharedPreferences("passkeys-test", Context.MODE_PRIVATE))
@@ -375,9 +375,11 @@ class TestHarness(
 
     val pageScripts = FakePageScripts()
 
+    val clipboardBridge = FakeBridgeInstaller()
+
     fun install() {
         store.save(Endpoints())
-        AppContainer.install(AppContainer(store, proxy, passkeys.platform, serviceWorkers, pageScripts) { siteData })
+        AppContainer.install(AppContainer(store, proxy, passkeys.platform, clipboardBridge, serviceWorkers, pageScripts) { siteData })
     }
 
     /** Seed the saved endpoints before the activity starts. */

@@ -162,11 +162,11 @@ class LoopbackGuardTest {
     }
 
     @Test
-    fun `a restored page starts loading only after the proxy runs and the passkey script is in`() {
+    fun `a restored page starts loading only after the proxy runs and the bridges' scripts are in`() {
         // The WebView loads a restored page at once, on its own thread, and the
         // request is checked against the running proxy. Restored first, it was
         // refused: on a Pixel the page came back as the refusal. And a page
-        // restored before the passkey script was installed would not get it.
+        // restored before the bridges' scripts were installed would not get them.
         harness.proxy.bindPreferredPorts = true
         harness.seed("ticket-alpha")
         val saved = savedAfterBrowsingTo("/deep/page")
@@ -174,11 +174,12 @@ class LoopbackGuardTest {
         fun history() = builder.get().findViewById<WebView>(R.id.web_view).copyBackForwardList().size
         val seen = mutableListOf<String>()
         harness.proxy.onStart = { seen += "start with ${history()} pages" }
-        harness.passkeys.installer.onInstall = { seen += "install with ${history()} pages" }
+        harness.passkeys.installer.onInstall = { seen += "passkeys with ${history()} pages" }
+        harness.clipboardBridge.onInstall = { seen += "clipboard with ${history()} pages" }
 
         controllers += builder.setup(saved)
 
-        assertEquals(listOf("start with 0 pages", "install with 0 pages"), seen)
+        assertEquals(listOf("start with 0 pages", "passkeys with 0 pages", "clipboard with 0 pages"), seen)
         assertEquals(2, history())
     }
 

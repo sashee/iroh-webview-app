@@ -17,9 +17,10 @@ import org.robolectric.android.controller.ActivityController
 /**
  * Where the activity offers the passkey bridge, and when it takes it away.
  *
- * The bridge is the one way page JavaScript reaches into the app, so the rule
- * worth pinning down is the boundary: offered to the running endpoint's exact
- * origin, withdrawn the moment that endpoint stops being the one on screen.
+ * The bridge is one of the two ways page JavaScript reaches into the app, so
+ * the rule worth pinning down is the boundary: offered to the running
+ * endpoint's exact origin, withdrawn the moment that endpoint stops being the
+ * one on screen.
  */
 @RunWith(RobolectricTestRunner::class)
 class PasskeyWiringTest {

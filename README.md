@@ -89,10 +89,10 @@ explanation, so logcat is the only place the reason exists.
   to do to use them.
 - **No HTTP parsing.** The proxy copies bytes. Chunked encoding, `Range`, `Set-Cookie`,
   redirects and keep-alive work because nothing here is a participant in them.
-- **No JavaScript interface.** The page comes from an arbitrary peer. Its one channel
-  into the app is for passkeys. It is restricted to the endpoint's own origin and carries
-  data, not methods. `addJavascriptInterface` is never used, as `WebViewConfigTest`
-  asserts.
+- **No JavaScript interface.** The page comes from an arbitrary peer. Its two channels
+  into the app are for passkeys and for copying text marked sensitive. Both are restricted
+  to the endpoint's own origin and carry data, not methods. `addJavascriptInterface` is
+  never used, as `WebViewConfigTest` asserts.
 
 `minSdk` is 34 — this targets one Pixel 6a, not the world.
 
@@ -191,3 +191,15 @@ behind the endpoint that tries each of the following and prints what happened. R
 20. Tap a link to another site: the real browser opens it. A page that sets `location` to
     another site on load, with no tap, stays where it is, and logcat shows `refused a
     navigation to https://<host>`.
+
+### Clipboard
+
+These need a page behind the endpoint with a button that calls
+`navigator.clipboard.writeText` (DESIGN.md, Clipboard).
+
+21. Tap the button. The copy preview shows dots instead of the text, and the keyboard's
+    clipboard history (Gboard: the clipboard icon) does not list it. Paste it elsewhere:
+    the text is intact.
+22. Have the page copy on a timer, then open the menu's **Endpoints and passkeys**
+    before it fires, or send the app to the background. The clipboard keeps what it had.
+23. Long-press text on the page and copy it. It is copied, unmarked, as in any browser.

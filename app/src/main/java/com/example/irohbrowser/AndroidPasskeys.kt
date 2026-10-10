@@ -11,10 +11,7 @@ import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import android.util.Log
-import android.webkit.WebView
 import androidx.appcompat.app.AlertDialog
-import androidx.webkit.WebViewCompat
-import androidx.webkit.WebViewFeature
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
@@ -28,9 +25,10 @@ import javax.crypto.SecretKey
 import javax.crypto.SecretKeyFactory
 
 /*
- * The platform half of passkeys: Keystore, BiometricPrompt, the WebView
- * bridge. Thin on purpose, like NativeProxy -- every decision is in
- * PasskeyAuthenticator and PasskeyRequests, where the tests can reach it.
+ * The platform half of passkeys: Keystore and BiometricPrompt; the WebView
+ * bridge is in PageBridges.kt. Thin on purpose, like NativeProxy -- every
+ * decision is in PasskeyAuthenticator and PasskeyRequests, where the tests can
+ * reach it.
  * Nothing here runs under Robolectric, so it is exercised on the device.
  */
 
@@ -213,43 +211,4 @@ class BiometricPasskeyUi(private val activity: Activity) : PasskeyUi {
             )
         return cancellation::cancel
     }
-}
-
-/**
- * The bridge and the script, through androidx.webkit.
- *
- * Both are restricted to exactly one origin -- scheme, host and port -- by the
- * WebView itself: pages of any other origin get neither the script nor the
- * injected object.
- */
-object WebViewPasskeyInstaller : PasskeyInstaller {
-
-    override fun install(webView: WebView, origin: String, receive: PasskeyReceiver): (() -> Unit)? {
-        val supported = WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
-            WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
-        if (!supported) return null
-
-        val rules = setOf(origin)
-        val script = webView.context.assets.open(PasskeyBridge.SCRIPT_ASSET).bufferedReader().use { it.readText() }
-        return try {
-            WebViewCompat.addWebMessageListener(webView, PasskeyBridge.NAME, rules) { _, message, sourceOrigin, _, replyProxy ->
-                val data = message.data ?: return@addWebMessageListener
-                receive(data, sourceOrigin.toString()) { replyProxy.postMessage(it) }
-            }
-            val handler = WebViewCompat.addDocumentStartJavaScript(webView, script, rules)
-            val uninstall: () -> Unit = {
-                handler.remove()
-                WebViewCompat.removeWebMessageListener(webView, PasskeyBridge.NAME)
-            }
-            uninstall
-        } catch (cause: IllegalArgumentException) {
-            // A rule the WebView will not accept. Browsing must not depend on
-            // passkeys, so the endpoint opens without them -- and logcat, the
-            // only place this would ever show, says why.
-            runCatching { WebViewCompat.removeWebMessageListener(webView, PasskeyBridge.NAME) }
-            Log.w(LOG_TAG, "passkeys unavailable for $origin: ${cause.message}")
-            null
-        }
-    }
-
 }

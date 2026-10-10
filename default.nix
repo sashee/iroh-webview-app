@@ -85,12 +85,13 @@ let
   # The cdylib for every ABI the APK ships, laid out for Gradle's jniLibs.
   nativeLibs = import ./nix/native-libs.nix { inherit pkgs minSdk; };
 
-  # The scripts injected into pages -- passkeys, tested against a fake bridge,
-  # and the one that removes WebRTC -- run in Node. Robolectric's WebView runs
+  # The scripts injected into pages -- passkeys and the clipboard, tested
+  # against fake bridges, and the one that removes WebRTC -- run in Node. Robolectric's WebView runs
   # no JavaScript, so without this they would first execute on the phone.
   pageScripts = pkgs.runCommand "page-script-tests" { nativeBuildInputs = [ pkgs.nodejs ]; } ''
     PASSKEYS_JS=${./app/src/main/assets/passkeys.js} node --test ${./app/src/test/js/passkeys.test.mjs}
     NO_WEBRTC_JS=${./app/src/main/assets/no-webrtc.js} node --test ${./app/src/test/js/no-webrtc.test.mjs}
+    CLIPBOARD_JS=${./app/src/main/assets/clipboard.js} node --test ${./app/src/test/js/clipboard.test.mjs}
     touch $out
   '';
 in

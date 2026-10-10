@@ -15,6 +15,8 @@ class AppContainer(
     val store: EndpointStore,
     val proxy: ProxyController,
     val passkeys: PasskeyPlatform,
+    /** The bridge `assets/clipboard.js` copies through (see [ClipboardBridge]). */
+    val clipboardBridge: BridgeInstaller,
     val serviceWorkers: ServiceWorkerRequests,
     val pageScripts: PageScripts,
     /**
@@ -43,11 +45,12 @@ class AppContainer(
                 store = EndpointStore.from(context),
                 proxy = NativeProxy,
                 passkeys = PasskeyPlatform(
-                    installer = WebViewPasskeyInstaller,
+                    installer = WebViewBridgeInstaller(PasskeyBridge.NAME, PasskeyBridge.SCRIPT_ASSET),
                     store = PasskeyStore.from(context),
                     vault = AndroidKeyVault,
                     ui = ::BiometricPasskeyUi,
                 ),
+                clipboardBridge = WebViewBridgeInstaller(ClipboardBridge.NAME, ClipboardBridge.SCRIPT_ASSET),
                 serviceWorkers = PlatformServiceWorkerRequests,
                 pageScripts = WebViewPageScripts,
             )

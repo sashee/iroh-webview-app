@@ -82,11 +82,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var settingsScreen: SettingsScreen
 
     /**
-     * Takes the passkey bridge away from the origin it was offered to. Null
+     * Take the page bridges away from the origin they were offered to. Empty
      * when nothing is offered: no endpoint running, or a WebView without the
-     * features the bridge needs.
+     * features a bridge needs.
      */
-    private var withdrawPasskeyBridge: (() -> Unit)? = null
+    private var bridgeWithdrawals: List<() -> Unit> = emptyList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -158,10 +158,10 @@ class MainActivity : AppCompatActivity() {
             useWideViewPort = true
             loadWithOverviewMode = true
         }
-        // Deliberately absent: addJavascriptInterface. The one way from page
-        // JavaScript into the app is the passkey bridge (offerPasskeys), which
-        // the WebView restricts to the endpoint's origin and which carries
-        // data, not callable methods.
+        // Deliberately absent: addJavascriptInterface. The ways from page
+        // JavaScript into the app are the passkey and clipboard bridges
+        // (offerBridges), which the WebView restricts to the endpoint's origin
+        // and which carry data, not callable methods.
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
                 view: WebView,
@@ -362,7 +362,7 @@ class MainActivity : AppCompatActivity() {
      *
      * [restoring] is the saved state of a WebView being brought back after the
      * process was killed. It is restored only once the proxy is running and
-     * the passkey script installed: the WebView starts loading the restored
+     * the bridges' scripts installed: the WebView starts loading the restored
      * page at once, on its own thread, and that request is checked against
      * [binding] -- restored earlier, it was refused. The restored page is then
      * kept only when it is on the origin this proxy now serves: if the proxy
@@ -373,7 +373,7 @@ class MainActivity : AppCompatActivity() {
     private fun openSelected(restoring: Bundle? = null) {
         container.proxy.stop()
         binding = null
-        withdrawPasskeys()
+        withdrawBridges()
 
         val endpoint = endpoints.selected
         if (endpoint == null) {
@@ -384,9 +384,9 @@ class MainActivity : AppCompatActivity() {
         when (val result = container.proxy.start(endpoint.ticket)) {
             is ProxyResult.Started -> {
                 binding = result.binding
-                // Before the load: the script is injected into documents that
-                // start after this, and the first page should have it.
-                offerPasskeys(result.binding)
+                // Before the load: the scripts are injected into documents
+                // that start after this, and the first page should have them.
+                offerBridges(result.binding)
                 showWebView()
                 val restoredPage = restoring?.let(webView::restoreState)?.currentItem?.url
                 val keepRestored = restoredPage != null &&
@@ -411,25 +411,34 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Give this endpoint's pages, and only them, a way to reach its passkeys.
+     * Give this endpoint's pages, and only them, a way to reach its passkeys
+     * and to copy text marked sensitive.
      *
      * The origin is fixed here, from the proxy that was just started: the
      * origin a ceremony signs for is never one the page supplied. The name is
      * read per request, so a rename shows in the very next prompt.
      */
-    private fun offerPasskeys(running: ProxyBinding) {
+    private fun offerBridges(running: ProxyBinding) {
         val origin = Origins.origin(running.label, running.port)
-        withdrawPasskeyBridge = container.passkeys.installer.install(webView, origin) { message, sourceOrigin, reply ->
-            val name = endpoints.selected?.displayName(running.label) ?: running.label
-            passkeys.receive(message, sourceOrigin, PasskeySite(running.label, running.port, name), reply)
-        }
+        bridgeWithdrawals = listOfNotNull(
+            container.passkeys.installer.install(webView, origin) { message, sourceOrigin, reply ->
+                val name = endpoints.selected?.displayName(running.label) ?: running.label
+                passkeys.receive(message, sourceOrigin, PasskeySite(running.label, running.port, name), reply)
+            },
+            container.clipboardBridge.install(webView, origin) { message, sourceOrigin, reply ->
+                // Messages arrive on the main thread, so the view can be asked.
+                val onScreen = webView.isShown && webView.hasWindowFocus()
+                ClipboardBridge.answer(message, sourceOrigin, running, onScreen) { copySensitive(this, it) }
+                    ?.let(reply)
+            },
+        )
     }
 
-    /** Withdraw the bridge, and any prompt the departing endpoint's page had raised. */
-    private fun withdrawPasskeys() {
+    /** Withdraw the bridges, and any prompt the departing endpoint's page had raised. */
+    private fun withdrawBridges() {
         passkeys.cancel()
-        withdrawPasskeyBridge?.invoke()
-        withdrawPasskeyBridge = null
+        bridgeWithdrawals.forEach { it() }
+        bridgeWithdrawals = emptyList()
     }
 
     private fun showEntry() {
@@ -570,7 +579,7 @@ class MainActivity : AppCompatActivity() {
         // A page waiting on a chooser that will never answer would be stuck.
         pendingFileChooser?.onReceiveValue(null)
         pendingFileChooser = null
-        withdrawPasskeys()
+        withdrawBridges()
         container.serviceWorkers.route(null)
         // Not in onPause: the proxy has to survive the screen going off, or
         // coming back would need a fresh dial for every connection.

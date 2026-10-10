@@ -111,17 +111,25 @@ class WebViewConfigTest {
     }
 
     @Test
+    fun `the clipboard script looks for the bridge the app installs`() {
+        // Drift here is as silent: copies go through the WebView, unmarked.
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val script = context.assets.open(ClipboardBridge.SCRIPT_ASSET).bufferedReader().use { it.readText() }
+        assertTrue(script.contains("globalThis.${ClipboardBridge.NAME}"))
+    }
+
+    @Test
     fun `no javascript interface is installed`() {
-        // The one bridge into the app is the passkey one: a WebMessageListener
-        // restricted to the endpoint's origin (see PasskeyWiringTest), whose
-        // messages are data. `addJavascriptInterface` would instead hand page
+        // The bridges into the app, for passkeys and the clipboard, are
+        // WebMessageListeners restricted to the endpoint's origin (see
+        // PasskeyWiringTest and ClipboardWiringTest), whose messages are data. `addJavascriptInterface` would instead hand page
         // JavaScript callable methods in the app process, in every frame of
         // every origin.
         //
         // A call that never happens leaves nothing for reflection to find, so
         // this asserts on the compiled classes instead: the constant pool has
         // no reference to the method at all.
-        listOf(MainActivity::class.java, WebViewPasskeyInstaller::class.java).forEach { type ->
+        listOf(MainActivity::class.java, WebViewBridgeInstaller::class.java).forEach { type ->
             val bytecode = type.classLoader!!
                 .getResourceAsStream(type.name.replace('.', '/') + ".class")!!
                 .use { it.readBytes() }

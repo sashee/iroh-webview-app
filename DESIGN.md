@@ -154,12 +154,13 @@ cookie and is discarded when the process does, whatever the app does.
   after a switch, and a restored page on the wrong port is replaced by the front page.
   WebSockets don't pass through either hook, and the proxy override lets `*.localhost`
   through on every port. But only a page already loaded from the endpoint can open one.
-- **One bridge from page JavaScript into the app, for passkeys only.** It is a
-  `WebMessageListener` that the WebView restricts to the running endpoint's exact origin.
-  It carries data, not callable methods, and accepts two operations, create and get. Each
-  needs a fingerprint before it signs anything. See [Passkeys](#passkeys).
-  `addJavascriptInterface` is still absent: `WebViewConfigTest` asserts that the compiled
-  classes do not reference it at all.
+- **Two bridges from page JavaScript into the app: passkeys and the clipboard.** Each is a
+  `WebMessageListener` that the WebView restricts to the running endpoint's exact origin,
+  and each carries data, not callable methods. The passkey bridge accepts two operations,
+  create and get, and each needs a fingerprint before it signs anything (see
+  [Passkeys](#passkeys)). The clipboard bridge accepts text to copy, and nothing else (see
+  [Clipboard](#clipboard)). `addJavascriptInterface` is still absent: `WebViewConfigTest`
+  asserts that the compiled classes do not reference it at all.
 - **External links leave the WebView, when the user taps them.** `http`/`https` outside
   our own origin go to the real browser, but only with a gesture
   (`WebResourceRequest.hasGesture`). Without one, a page could send itself elsewhere on a
@@ -283,6 +284,30 @@ in the WebView, not on the loopback port.
   endpoint (same id, same host) makes them usable again. Until then the "Endpoints and
   passkeys" screen lists them as "without an endpoint", where they can be deleted.
 
+## Clipboard
+
+A page served through the tunnel may be a password manager, and a password it copies
+should be marked sensitive (`ClipDescription.EXTRA_IS_SENSITIVE`). Android then shows dots
+in the copy preview, and keyboards leave the clip out of their clipboard history. The
+WebView never sets the flag, and nothing in WebView settings or androidx.webkit asks it to.
+So the app writes the clip itself:
+
+- `assets/clipboard.js` is injected at document start, for the running endpoint's origin
+  only. It replaces `navigator.clipboard.writeText`, and `write` of a single item that has
+  `text/plain`, with a message to a `WebMessageListener` named `__irohClipboard`. A `write`
+  with other types besides `text/plain` copies only the text.
+- `ClipboardBridge.answer` copies the text only for the running proxy's origin, and only
+  while the page is on screen and its window has focus. That is the browser's own rule
+  for `writeText`. Android lets a background app write the clipboard, and the page keeps
+  running while the app is in the background.
+- `copySensitive` writes the clip with the flag set. It is the only write, so the text is
+  never on the clipboard unmarked.
+
+**Limits.** Copying a selection (long-press, Copy) and `document.execCommand("copy")` go
+through Chromium and are not marked, and neither is a `write` with no `text/plain`. A page
+that wants its copies marked uses `navigator.clipboard.writeText`. The bridge gives a page
+nothing it did not have: it could already replace the clipboard while on screen.
+
 ## Android specifics
 
 **DNS.** iroh resolves a bare endpoint id through DNS, and Android has no
@@ -362,6 +387,12 @@ passkey provider. Google Password Manager and Proton Pass refuse a browser that 
 their list. Bitwarden and Keyguard accept one after a "trust this browser" prompt. Rejected
 because passkeys would depend on each provider's list, and because a key in the phone's
 own hardware never leaves it, which a synced provider's key does.
+
+**Marking the clipboard after the WebView wrote it** (an `OnPrimaryClipChangedListener`
+that rewrites each new clip with the sensitive flag). This would cover every kind of copy,
+selections included. But the unmarked clip exists first, and a keyboard can save it to its
+clipboard history before the rewrite lands. Hence the bridge described under
+[Clipboard](#clipboard).
 
 **Tailscale or WireGuard instead of all of this.** Genuinely the lowest-effort way to get a
 phone-readable dashboard. Rejected only because iroh-as-transport is a goal in itself here.

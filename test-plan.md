@@ -173,7 +173,7 @@ to whatever app is listening there.
   activity
 - switching drops the history once the new endpoint's page has loaded, and a late callback
   for the page being left does not count
-- a restored page starts loading only after the proxy runs and the passkey script is in
+- a restored page starts loading only after the proxy runs and both bridges' scripts are in
   (restored first, its request was refused, which the Pixel showed and Robolectric could not)
 - a restored page is kept when the proxy got its port back, and replaced by the front page
   — history dropped — when it did not
@@ -200,9 +200,10 @@ later.
 - pinch-to-zoom is enabled, and the on-screen zoom buttons are hidden
 - pages are laid out the way a browser lays them out
 - no JavaScript interface: `addJavascriptInterface` is checked against the compiled
-  classes of the activity and of the passkey installer, since a call that never happens
+  classes of the activity and of the bridge installer, since a call that never happens
   leaves nothing for reflection to find
-- the passkey script looks for the bridge object the app installs, by the same name
+- the passkey script and the clipboard script each look for the bridge object the app
+  installs, by the same name
 
 ### Manifest and resources — `ManifestAndResourceTest`
 
@@ -329,6 +330,22 @@ code under test.
   shows the endpoint's saved name
 - a WebView without the bridge's features still browses
 
+### The clipboard bridge — `ClipboardBridgeTest`
+
+- a page's text is copied, and the reply carries its id
+- another origin, the same host on another port, or a page not on screen is refused, and
+  nothing is copied
+- a message without text is a `TypeError`; non-requests get no reply
+- a copy the system refuses is reported to the page as `NotAllowedError`
+- the clip is written with `EXTRA_IS_SENSITIVE` set
+
+### Where the clipboard bridge is offered — `ClipboardWiringTest`
+
+- to the running endpoint's exact origin, moved on a switch, and to nothing before one is
+  running; finishing the activity withdraws it
+- a page's copy lands on the clipboard marked sensitive
+- a page behind the settings screen, or in a window without focus, copies nothing
+
 ### The settings screen's model — `SettingsTest`
 
 Plain JUnit: it is a pure function of the saved state.
@@ -395,6 +412,19 @@ In Node, against a fake bridge and a fake `navigator`.
   without results stays without; registration reports whether PRF is enabled;
   `extension:prf` is a capability; JSON options with PRF inputs parse into the binary form
 
+## The clipboard script — `app/src/test/js/clipboard.test.mjs`
+
+In Node, against a fake bridge and a fake `navigator.clipboard`.
+
+- `writeText` hands the text to the app and resolves only once the app has copied it
+- refusals reject with the exception a browser would throw; replies are matched to writes
+  by id; stray or non-JSON replies are ignored
+- `writeText` takes any value as a string, but no argument is a `TypeError` that never
+  reaches the app
+- `write` of one item with `text/plain` copies its text through the app; any other write
+  goes to the browser's own `write`; a `write` of something not a list rejects
+- without the bridge, or without a clipboard, the script changes nothing
+
 ## Gaps, stated rather than hidden
 
 - **`*.localhost` resolution and cookie keying** are Chromium behaviour. Robolectric's
@@ -412,6 +442,9 @@ In Node, against a fake bridge and a fake `navigator`.
   generation, per-use authentication, `BiometricPrompt`, and the WebView's message
   listener and document-start script. Robolectric has none of them. `AndroidPasskeys.kt`
   is kept thin for that reason. The passkey checks in README.md cover it.
+- **Whether a clip marked sensitive is hidden** is the system's and the keyboard's
+  behaviour. The tests check that the flag is set, and README.md's clipboard checks that
+  it does what it should.
 - **The script and the app** are tested apart and meet first on the phone. The JSON
   between them is pinned on both sides: the app's output by webauthn4j, the script's
   handling of it by Node.

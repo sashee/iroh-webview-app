@@ -66,7 +66,10 @@ default, which silently disables pinch-to-zoom; a download listener and an
 `onShowFileChooser` are absent by default, which makes downloads and file inputs do nothing
 at all. All three fail silently, so nothing points at them.
 
-**The passkey bridge is the one door from page JavaScript into the app.** Keep it narrow:
+**There are two doors from page JavaScript into the app: the passkey bridge and the
+clipboard bridge.** Keep both narrow. The clipboard one only takes text to copy, only from
+the running proxy's origin, and only while the page is on screen and focused
+(`ClipboardBridge.answer`). For the passkey one:
 
 - The origin a passkey signs for comes from the running proxy (`PasskeySite`), never from a
   message. Do not add an origin, RP ID or "trusted" field to the bridge protocol.
@@ -77,11 +80,19 @@ at all. All three fail silently, so nothing points at them.
 - Never use `addJavascriptInterface`. `WebViewConfigTest` checks the bytecode.
 
 **`addDocumentStartJavaScript` only reaches documents that start after it.** That is why
-`openSelected` offers passkeys before `loadUrl`. The script and the listener are installed
-per origin and withdrawn on every switch, together with any prompt still showing.
+`openSelected` offers the bridges before `loadUrl`. Their scripts and listeners are
+installed per origin and withdrawn on every switch, together with any prompt still showing.
 
-**`passkeys.js` and `PasskeyBridge.NAME` are joined by a string.** If they drift, pages
-silently have no passkeys. `WebViewConfigTest` checks that they agree.
+**`passkeys.js` and `PasskeyBridge.NAME` are joined by a string**, and so are
+`clipboard.js` and `ClipboardBridge.NAME`. If they drift, pages silently have no passkeys,
+or copy unmarked. `WebViewConfigTest` checks that they agree.
+
+**Copies are marked sensitive only through `navigator.clipboard`.** The WebView's own
+clipboard writes carry no `EXTRA_IS_SENSITIVE`, so `clipboard.js` sends `writeText`, and
+`write` of one item with `text/plain`, to the app, which writes the clip itself. Copying a
+selection and `execCommand("copy")` go through Chromium and stay unmarked. Re-marking a
+clip after the WebView wrote it is not a fix: keyboards can save the first write to their
+clipboard history before the second arrives.
 
 **Adding a fingerprint invalidates every passkey key.** Android does this to keys bound to
 biometrics. `signIn` then forgets the passkey and says why. That is expected behaviour,
@@ -181,9 +192,18 @@ Passkeys (`app/src/main/java/com/example/irohbrowser/` and `app/src/main/assets/
   cancellation.
 - `PasskeyStore.kt` — what is remembered about each passkey, including whether it has a
   PRF key. The keys themselves stay in the Keystore.
-- `PasskeyPlatform.kt` — the seams: `KeyVault`, `PasskeyUi`, `PasskeyInstaller`.
+- `PasskeyPlatform.kt` — the seams: `KeyVault`, `PasskeyUi`.
 - `AndroidPasskeys.kt` — the platform side of those seams: Keystore/StrongBox,
-  BiometricPrompt, `WebViewCompat`. Thin, and only exercised on a device.
+  BiometricPrompt. Thin, and only exercised on a device.
+
+Page bridges (`app/src/main/java/com/example/irohbrowser/` and `app/src/main/assets/`):
+
+- `PageBridges.kt` — `BridgeInstaller`, the seam both bridges are offered through, and
+  its `WebViewCompat` implementation.
+- `assets/clipboard.js` — injected into pages. Hands `navigator.clipboard` writes to the
+  app.
+- `Clipboard.kt` — `ClipboardBridge.answer`, which decides whether a copy goes ahead
+  (pure apart from the copy), and `copySensitive`, which writes the clip.
 
 ## Debugging on a device
 
@@ -225,7 +245,8 @@ detail, so logcat is the only place the reason exists.
   - **`PasskeyAuthenticatorTest`**: whole ceremonies with software keys, verified by
     webauthn4j acting as the server.
   - **`app/src/test/js/passkeys.test.mjs`** (Node, `nix-build -A pageScripts`): the
-    injected script against a fake bridge.
+    injected script against a fake bridge. `clipboard.test.mjs` does the same for the
+    clipboard script.
   - **On the device** (README.md): the Keystore, BiometricPrompt and the WebView's bridge.
 
 ## Style
