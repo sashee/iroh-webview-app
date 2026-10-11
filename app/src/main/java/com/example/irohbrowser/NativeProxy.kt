@@ -20,11 +20,11 @@ object NativeProxy : ProxyController {
     }
 
     /**
-     * Give iroh a way to read the device's DNS configuration.
+     * Give iroh's dependencies a way to call into the platform.
      *
-     * Android has no `/etc/resolv.conf`; without this, resolving a bare endpoint
-     * id falls back to public nameservers. Called once with the application
-     * context, whose lifetime is the process's.
+     * Not for DNS: the proxy resolves over DoH and never reads the device's
+     * nameservers. netdev, which reads the device's interfaces, needs it.
+     * Called once with the application context, whose lifetime is the process's.
      */
     fun installContext(context: Context) {
         nativeInstallContext(context.applicationContext)

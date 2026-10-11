@@ -12,7 +12,7 @@ use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    proxy,
+    proxy, resolver,
     ticket::{self, TicketError},
 };
 
@@ -75,12 +75,14 @@ impl Drop for Running {
 ///
 /// The endpoint uses the n0 defaults: relays for reachability, and discovery so
 /// that a bare endpoint id resolves. A ticket carrying relay urls does not need
-/// the discovery half — see the DNS note in the crate docs.
+/// the discovery half — see the DNS note in the crate docs. Every name it
+/// resolves goes over DoH ([`resolver`]), never to the network's nameservers.
 pub fn start(input: &str) -> Result<Running, StartError> {
     let addr = ticket::parse(input).map_err(StartError::Ticket)?;
     let runtime = Runtime::new().map_err(|e| StartError::Io(e.to_string()))?;
+    let dns = resolver::doh().map_err(|e| StartError::Io(e.to_string()))?;
     let endpoint = runtime
-        .block_on(Endpoint::builder(presets::N0).bind())
+        .block_on(Endpoint::builder(presets::N0).dns_resolver(dns).bind())
         .map_err(|e| StartError::Io(e.to_string()))?;
     bind_with(runtime, endpoint, addr, proxy::DIAL_TIMEOUT)
 }

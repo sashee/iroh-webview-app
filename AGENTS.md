@@ -143,9 +143,15 @@ sashee/nixos-test's `packages/iroh-ssh`, the same far side the monitoring platfo
 nixpkgs' `dumbpipe` speaks the same wire format, but the pinned one is built on iroh 0.35,
 which the app's iroh 1.0 cannot reach.
 
-**Release must keep `panic = "unwind"`.** iroh's Android DNS path relies on unwinding to
-fall back to public nameservers when no JNI context is installed. `abort` turns that
-fallback into a crash.
+**Name resolution is DoH only** (`resolver.rs`). Do not add the network's nameservers
+back, not even as a fallback: a network that filters DNS controls exactly that path. Keep
+the servers IPv4. iroh names a DoH server by its bare address, which hickory uses as the
+URI authority, and an unbracketed IPv6 address there fails every request. The ignored test
+`every_server_answers_over_https` checks the real servers (`cargo test --lib -- --ignored`,
+needs network).
+
+**Release must keep `panic = "unwind"`.** netdev, under netwatch, probes for the JNI
+context by catching a panic. `abort` turns a missing context into a crash.
 
 ## Where things live
 
@@ -161,6 +167,7 @@ Rust (`rust/src/`) — each module is small and its tests are beside it:
 - `Downloads.kt` (Kotlin) — the `127.0.0.1` rewrite for `DownloadManager`, which cannot
   resolve `*.localhost`.
 - `gateway.rs` — the canned 502.
+- `resolver.rs` — the endpoint's DNS resolver: public DoH servers by address, nothing else.
 - `runtime.rs` — start/stop for a non-async caller; owns the tokio runtime.
 - `android.rs` — JNI only, compiled for Android alone. No judgement in it.
 

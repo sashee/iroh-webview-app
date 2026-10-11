@@ -11,8 +11,8 @@ internal const val LOG_TAG = "irohbrowser"
  *
  * All three happen here rather than in the activity because all three are
  * process-wide and must happen before the first proxy starts: the context has
- * to be installed before iroh builds its first DNS resolver, and the WebView
- * confined before it loads its first page.
+ * to be installed before iroh first reads the device's interfaces, and the
+ * WebView confined before it loads its first page.
  */
 class IrohBrowserApp : Application() {
 

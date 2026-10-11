@@ -28,13 +28,15 @@
 //!
 //! # A note on DNS
 //!
-//! iroh resolves a bare endpoint id through DNS, and Android has no
-//! `/etc/resolv.conf` — `iroh_dns` reads the active network's nameservers
-//! through JNI instead, which needs an Android context installed before the
-//! first `DnsResolver` is built. [`install_android_context`] does that; the app
-//! calls it once at startup. Without it, iroh catches the resulting panic and
-//! falls back to public nameservers, so the release profile must keep panics
-//! unwinding (`panic = "abort"` would turn that fallback into a crash).
+//! iroh resolves relay hostnames, and a bare endpoint id, through DNS. It never
+//! asks the network's nameservers: [`resolver`] sends every lookup to public
+//! DoH servers, so a network that filters DNS cannot answer for it.
+//!
+//! The Android context `nativeInstallContext` installs is no longer for DNS.
+//! netdev, which netwatch uses to read the device's interfaces, reaches the
+//! platform through it, and probes for it by catching a panic -- so the release
+//! profile must keep panics unwinding (`panic = "abort"` would turn a missing
+//! context into a crash).
 //!
 //! Tickets that carry relay urls sidestep discovery altogether, which is why
 //! [`ticket::parse`] keeps them.
@@ -42,6 +44,7 @@
 pub mod gateway;
 pub mod pipe;
 pub mod proxy;
+pub mod resolver;
 pub mod runtime;
 pub mod ticket;
 

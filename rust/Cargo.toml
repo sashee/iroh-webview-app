@@ -33,8 +33,8 @@ crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [profile.release]
-# Not `abort`: iroh's Android DNS path relies on unwinding to fall back to
-# public nameservers when no JNI context is installed. See src/lib.rs.
+# Not `abort`: netdev (under netwatch) probes for the JNI context by catching a
+# panic, so `abort` turns a missing context into a crash. See src/lib.rs.
 panic = "unwind"
 
 [dev-dependencies]

@@ -310,13 +310,23 @@ nothing it did not have: it could already replace the clipboard while on screen.
 
 ## Android specifics
 
-**DNS.** iroh resolves a bare endpoint id through DNS, and Android has no
-`/etc/resolv.conf` — `iroh_dns` reads the active network's nameservers through JNI, which
-needs an Android context installed before the first resolver is built.
-`IrohBrowserApp.onCreate` does that via `NativeProxy.installContext`. Without it iroh
-catches the resulting panic and falls back to public nameservers, which is why the release
-profile keeps `panic = "unwind"`: `abort` would turn that fallback into a crash. Tickets
-carrying relay urls avoid the whole question, which is why `ticket::parse` keeps them.
+**DNS.** iroh resolves relay hostnames, and a bare endpoint id, through DNS. A network
+that filters DNS answers those lookups with NXDOMAIN or a sinkhole address, and the dial
+fails as "Endpoint unreachable" with nothing to say why. So the endpoint's resolver
+(`rust/src/resolver.rs`) asks only public DoH servers: Cloudflare, Google and Quad9,
+dialled by IPv4 address so reaching them needs no DNS, their certificates checked with the
+compiled-in roots. There is no fallback to the network's nameservers, on purpose: that is
+the path the filter controls. A network that blocks the DoH servers themselves still
+breaks resolution. The servers are IPv4 only because iroh names a DoH server by its bare
+address, which hickory puts in the request URI, where an unbracketed IPv6 address is
+invalid. IPv4 literals still work on IPv6-only networks through 464XLAT.
+
+The Android context `IrohBrowserApp.onCreate` installs (`NativeProxy.installContext`) is
+therefore not for DNS any more. netdev, which netwatch uses to read the interfaces, calls
+the platform through it and probes for it by catching a panic, which is why the release
+profile keeps `panic = "unwind"`: `abort` would turn a missing context into a crash.
+Tickets carrying relay urls avoid discovery, which is why `ticket::parse` keeps them; the
+relay hostnames still resolve over DoH.
 
 **No `rustls-platform-verifier`.** The server enables it so a hermetic VM test can
 impersonate the n0 relays with its own CA. The phone talks to the real public relays, so

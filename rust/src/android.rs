@@ -34,13 +34,13 @@ const ERROR_BAD_TICKET: jint = -1;
 const ERROR_START_FAILED: jint = -2;
 const ERROR_BAD_ARGUMENT: jint = -3;
 
-/// Give iroh a way to read the active network's nameservers.
+/// Publish the JVM and application context to the Rust dependencies that call
+/// into the platform.
 ///
-/// Android has no `/etc/resolv.conf`; `iroh_dns` goes through
-/// `LinkProperties.getDnsServers()` over JNI instead, and needs an application
-/// context installed before the first resolver is built. Without this, iroh
-/// catches the resulting panic and falls back to public nameservers — which is
-/// why the release profile must leave panics unwinding.
+/// DNS no longer needs it: the endpoint resolves over DoH (`resolver.rs`) and
+/// never reads the network's nameservers. netdev, under netwatch, still reads
+/// interface details through JNI, and probes for the context by catching a
+/// panic -- which is why the release profile must leave panics unwinding.
 ///
 /// Called once from `Application.onCreate`, with the application context so the
 /// global reference we leak is one that lives as long as the process anyway.

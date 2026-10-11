@@ -112,6 +112,9 @@ and they are worth walking after a change to the WebView or the endpoint switchi
 4. A page with images, a stylesheet and a font loads fully, with no asset rewriting.
 5. A large response streams rather than buffering; media seeking works.
 6. `Set-Cookie` from the server appears in `CookieManager`, and `HttpOnly` is respected.
+7. On a network whose DNS blocks `iroh.link` (a Pi-hole, or a laptop hotspot with
+   `dnsmasq --address=/iroh.link/0.0.0.0`), both a bare endpoint id and a ticket still
+   connect: the proxy resolves over DoH and never asks the network's nameservers.
 
 Two open questions can only be answered on a device, and the answers decide whether the
 per-endpoint origins work as designed:
