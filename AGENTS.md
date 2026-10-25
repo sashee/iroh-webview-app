@@ -172,7 +172,8 @@ load. Any task that holds a socket must end with its connection's stop token:
 `forward_bidi` runs each direction on a spawned task, which dropping its future would not
 end, so it takes the token (`closing_the_connections_ends_those_open_and_not_those_after`).
 Only writes towards the endpoint have a stall timeout; never add one towards the browser,
-which stops reading whenever a track is paused.
+which stops reading whenever a track is paused. An answer that doesn't come is judged by
+QUIC's losses, not by time alone (`proxy::stuck`): servers may legitimately take minutes.
 
 **Release must keep `panic = "unwind"`.** netdev, under netwatch, probes for the JNI
 context by catching a panic. `abort` turns a missing context into a crash.

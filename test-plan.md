@@ -60,6 +60,12 @@ that needs a real Chromium. Those are the on-device checks in [README.md](README
 - a writer that takes nothing fails the copy once the stall limit passes
 - a slow writer that keeps taking is not a stalled one
 - a reader that sends nothing for a while is not a stall
+- the endpoint owes an answer from the last bytes sent until any come back
+- copying notes every write
+
+### Answers that don't come — `src/proxy.rs`
+
+- losses count on the paths open before and after
 
 ### Transport, end to end — `tests/transport.rs`
 
@@ -73,6 +79,7 @@ property the design promises, and each passes for the same reason: nothing parse
 - a chunked response is forwarded as chunks, not silently de-chunked
 - a `Range` request and its `206` pass through with `Content-Range` intact
 - a redirect is passed through rather than followed
+- a slow answer on a connection that loses nothing is waited for
 - a request body is forwarded
 - an 8 MB response streams rather than buffering, and arrives byte-exact
 - six concurrent connections stay isolated, with all requests sent before any response is

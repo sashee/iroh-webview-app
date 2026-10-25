@@ -361,3 +361,25 @@ async fn closing_the_connections_ends_those_open_and_not_those_after() {
     let response = exchange(&mut after, b"GET /3 HTTP/1.1\r\nHost: x\r\n\r\n").await;
     assert!(String::from_utf8(response).unwrap().ends_with("response 3"), "and keeps working");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_answer_on_a_connection_that_loses_nothing_is_waited_for() {
+    // A server that takes its time, as one passing a large upload on to S3
+    // does, is not a stuck connection: only losses say that.
+    let origin = Origin::serving(|_, _| {
+        std::thread::sleep(Duration::from_millis(1500));
+        sized("worth the wait")
+    })
+    .await;
+    let far = FarSide::forwarding_to(origin.addr).await;
+    let watchdog = iroh_webview_proxy::proxy::Watchdog {
+        overdue: Duration::from_millis(200),
+        every: Duration::from_millis(100),
+        lost_packets: 3,
+    };
+    let near = NearSide::dialing_with(far.addr.clone(), iroh_webview_proxy::proxy::DIAL_TIMEOUT, watchdog).await;
+
+    let mut stream = near.connect().await;
+    let response = exchange(&mut stream, b"PUT /blob HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nbody").await;
+    assert!(String::from_utf8(response).unwrap().ends_with("worth the wait"));
+}

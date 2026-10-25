@@ -10,16 +10,24 @@
 //! `Range` all happen inside a stream we never inspect.
 
 use std::{
+    collections::BTreeMap,
     net::SocketAddr,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use iroh::{Endpoint, EndpointAddr};
-use tokio::{io::AsyncWriteExt, net::TcpListener};
+use iroh::{
+    endpoint::{Connection, PathId},
+    Endpoint, EndpointAddr,
+};
+use tokio::{io::AsyncWriteExt, net::TcpListener, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
-use crate::{gateway, pipe::forward_bidi, ALPN, HANDSHAKE};
+use crate::{
+    gateway,
+    pipe::{forward_bidi, Activity},
+    ALPN, HANDSHAKE,
+};
 
 /// How long one dial may take before the browser is told the endpoint is
 /// unreachable.
@@ -35,6 +43,109 @@ pub const DIAL_TIMEOUT: Duration = Duration::from_secs(20);
 /// ([`crate::pipe::copy_watched`]). A browser then sees a failed request, which
 /// it can retry, rather than one that never ends.
 pub const STALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// What the proxy does about a response that doesn't come.
+///
+/// A connection that sent the endpoint a request and heard nothing back is not
+/// necessarily stuck: a server may take minutes to answer, as one passing a
+/// large upload on to S3 does. What says it is stuck is QUIC: the connection
+/// losing packets, over and over, while the answer is overdue. That is what
+/// connections Android leaves behind do after it gives the app its network
+/// back: they carry a small request but not a request body (DESIGN.md, Android
+/// specifics). Closing one makes the browser send the request again on a fresh
+/// connection, which Chromium does by itself on a connection it had reused.
+#[derive(Clone, Copy, Debug)]
+pub struct Watchdog {
+    /// How long an answer may be owed before the connection's losses count.
+    pub overdue: Duration,
+    /// How often a connection is looked at.
+    pub every: Duration,
+    /// How many packets, not counting MTU probes, the connection may lose
+    /// after the answer is overdue. A lost keep-alive or two is the network
+    /// being a network; a request lost again and again is more.
+    pub lost_packets: u64,
+}
+
+pub const WATCHDOG: Watchdog = Watchdog {
+    overdue: Duration::from_secs(20),
+    every: Duration::from_secs(5),
+    lost_packets: 3,
+};
+
+/// The packets each open path of `connection` has lost, not counting MTU
+/// probes: losing those is how a path finds its MTU.
+fn losses(connection: &Connection) -> BTreeMap<PathId, u64> {
+    let paths = connection.paths();
+    (&paths)
+        .into_iter()
+        .map(|path| {
+            let stats = path.stats();
+            (path.id(), stats.lost_packets.saturating_sub(stats.lost_plpmtud_probes))
+        })
+        .collect()
+}
+
+/// The packets lost between two snapshots of [`losses`], on the paths open at
+/// both.
+pub fn lost_between<K: Ord>(before: &BTreeMap<K, u64>, after: &BTreeMap<K, u64>) -> u64 {
+    after
+        .iter()
+        .filter_map(|(path, lost)| before.get(path).map(|was| lost.saturating_sub(*was)))
+        .sum()
+}
+
+/// One line about each path of `connection`, for the log.
+fn describe(connection: &Connection) -> String {
+    let paths = connection.paths();
+    (&paths)
+        .into_iter()
+        .map(|path| {
+            let stats = path.stats();
+            format!(
+                "{}{} rtt {:?} mtu {} sent {} lost {} (mtu probes {}) black holes {}",
+                if path.is_relay() { "relay" } else { "direct" },
+                if path.is_selected() { " (selected)" } else { "" },
+                stats.rtt,
+                stats.current_mtu,
+                stats.sent_packets,
+                stats.lost_packets,
+                stats.lost_plpmtud_probes,
+                stats.black_holes_detected,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Resolves, saying why, once `connection` has owed an answer for longer than
+/// `watchdog.overdue` and lost more than `watchdog.lost_packets` packets since
+/// then (see [`Watchdog`]). Never resolves otherwise. An answer overdue without
+/// those losses is logged once, with what QUIC says of each path.
+pub async fn stuck(connection: &Connection, activity: &Activity, watchdog: Watchdog) -> String {
+    let mut ticks = tokio::time::interval(watchdog.every);
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    // Since when the answer is owed, and the losses once it was overdue.
+    let mut overdue: Option<(Instant, BTreeMap<PathId, u64>)> = None;
+    loop {
+        ticks.tick().await;
+        let Some(since) = activity.owed_since().filter(|since| since.elapsed() >= watchdog.overdue) else {
+            overdue = None;
+            continue;
+        };
+        match &overdue {
+            Some((at, before)) if *at == since => {
+                let lost = lost_between(before, &losses(connection));
+                if lost > watchdog.lost_packets {
+                    return format!("no answer for {:?}, and {lost} packets lost since it was due: {}", since.elapsed(), describe(connection));
+                }
+            }
+            _ => {
+                log::info!("an answer has been owed for {:?}: {}", since.elapsed(), describe(connection));
+                overdue = Some((since, losses(connection)));
+            }
+        }
+    }
+}
 
 /// The connections the proxy carries, closable all at once.
 ///
@@ -82,12 +193,14 @@ impl Connections {
 /// Every accepted connection is handled on its own task, so a slow dial to the
 /// far side never blocks the next request — a browser opens several connections
 /// per origin and expects all of them to make progress. Each one ends with
-/// `shutdown`, or when `connections` closes its generation.
+/// `shutdown`, when `connections` closes its generation, or when `watchdog`
+/// finds it stuck.
 pub async fn serve(
     listener: TcpListener,
     endpoint: Endpoint,
     addr: EndpointAddr,
     dial_timeout: Duration,
+    watchdog: Watchdog,
     shutdown: CancellationToken,
     connections: Connections,
 ) {
@@ -114,7 +227,7 @@ pub async fn serve(
         let addr = addr.clone();
         let stop = connections.current();
         tokio::spawn(async move {
-            handle(stream, peer, endpoint, addr, dial_timeout, stop).await;
+            handle(stream, peer, endpoint, addr, dial_timeout, watchdog, stop).await;
         });
     }
 }
@@ -126,6 +239,7 @@ async fn handle(
     endpoint: Endpoint,
     addr: EndpointAddr,
     dial_timeout: Duration,
+    watchdog: Watchdog,
     stop: CancellationToken,
 ) {
     // Every local peer is served. There is no way to tell one from another on
@@ -159,8 +273,16 @@ async fn handle(
     }
 
     let (read, write) = stream.into_split();
+    let activity = Arc::new(Activity::default());
+    // Ends this connection alone, when its answer is stuck.
+    let this = stop.child_token();
     let forwarded = tokio::select! {
-        forwarded = forward_bidi(read, write, recv, send, STALL_TIMEOUT, &stop) => forwarded,
+        forwarded = forward_bidi(read, write, recv, send, STALL_TIMEOUT, activity.clone(), &this) => forwarded,
+        why = stuck(&connection, &activity, watchdog) => {
+            log::warn!("closing the connection for {peer}, stuck: {why}");
+            this.cancel();
+            return;
+        }
         _ = stop.cancelled() => return,
     };
     // An error here is the ordinary shape of a browser closing a connection, so
@@ -197,5 +319,18 @@ pub async fn bind_loopback(port: u16) -> std::io::Result<TcpListener> {
             log::warn!("preferred port {port} unavailable ({cause}); taking any free port");
             TcpListener::bind(SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0))).await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn losses_count_on_the_paths_open_before_and_after() {
+        let before = BTreeMap::from([(0, 5), (1, 2)]);
+        let after = BTreeMap::from([(0, 9), (2, 40)]);
+        assert_eq!(lost_between(&before, &after), 4, "a path that closed or opened since doesn't count");
+        assert_eq!(lost_between(&after, &after), 0);
     }
 }

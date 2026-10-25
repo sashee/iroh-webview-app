@@ -126,6 +126,7 @@ pub fn bind_with(
         endpoint.clone(),
         addr,
         dial_timeout,
+        proxy::WATCHDOG,
         shutdown.clone(),
         connections.clone(),
     ));

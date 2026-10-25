@@ -379,6 +379,18 @@ the block worked at once. So:
   stream takes nothing for 30 seconds while the browser has bytes for it is closed, so
   any other stall ends as an error too. Writes towards the browser are not watched: a
   paused `<audio>` element stops reading for as long as it is paused.
+- Connections opened just after the network comes back can be bad the same way: on
+  2026-10-25 a page's 8 KB requests, sent 10 seconds after a block ended on connections
+  opened 3 seconds after it, took 56 and 188 seconds to reach the server, while a fresh
+  connection answered in 35 ms. Such a request fits in the stream's buffer, so no write
+  waits and the stall timeout never fires. So answers are watched too (`proxy::stuck`):
+  a connection that has owed an answer for 20 seconds since its last bytes went out, and
+  then loses more than 3 packets (MTU probes aside), is closed. Chromium sends a request
+  again by itself when a connection it reused closes before any answer, so the page
+  carries on. Losses are the test, not time alone: a server may take minutes to answer,
+  as one passing a large upload on to S3 does, and that connection loses nothing. An
+  answer overdue without the losses is logged once, with each path's QUIC stats
+  (`an answer has been owed for …`), and a closed one says `stuck:` with the same.
 - A page that plays music keeps its network in the background, because the playback
   service is a foreground service (Media). Anything else in the background, such as a
   long upload, is cut off when the block comes.

@@ -245,3 +245,8 @@ metadata and handlers, for example media-store (DESIGN.md, Media).
     `network blocked by Android: closing the proxy's connections` and then `network back`.
 32. Start a large upload and switch to another app before it finishes: once the block
     comes, about five seconds later, the upload fails with an error rather than hanging.
+33. Switch to another app for ten seconds, come back, and save something at once (in
+    media-store, Sort again). It saves. If a request does get stuck, `adb logcat -s
+    irohbrowser:V` shows `an answer has been owed for …` with each path's QUIC stats, and
+    within about half a minute `closing the connection for …, stuck:`, after which the
+    request goes through again on a fresh connection.

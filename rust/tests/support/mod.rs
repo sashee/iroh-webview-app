@@ -16,7 +16,10 @@ use std::{
 };
 
 use iroh::{endpoint::presets, Endpoint, EndpointAddr};
-use iroh_webview_proxy::{pipe::forward_bidi, proxy, ALPN, HANDSHAKE};
+use iroh_webview_proxy::{
+    pipe::{forward_bidi, Activity},
+    proxy, ALPN, HANDSHAKE,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -82,7 +85,7 @@ impl FarSide {
                         return;
                     };
                     let (read, write) = tcp.into_split();
-                    let _ = forward_bidi(read, write, recv, send, proxy::STALL_TIMEOUT, &CancellationToken::new()).await;
+                    let _ = forward_bidi(read, write, recv, send, proxy::STALL_TIMEOUT, Arc::new(Activity::default()), &CancellationToken::new()).await;
                     drop(conn);
                 });
             }
@@ -127,6 +130,12 @@ impl NearSide {
     /// A short dial timeout keeps the unreachable-endpoint tests quick; the
     /// production value is [`proxy::DIAL_TIMEOUT`].
     pub async fn dialing_with_timeout(addr: EndpointAddr, dial_timeout: Duration) -> Self {
+        Self::dialing_with(addr, dial_timeout, proxy::WATCHDOG).await
+    }
+
+    /// A watchdog that looks sooner keeps the slow-answer tests quick; the
+    /// production one is [`proxy::WATCHDOG`].
+    pub async fn dialing_with(addr: EndpointAddr, dial_timeout: Duration, watchdog: proxy::Watchdog) -> Self {
         let endpoint = local_endpoint(vec![]).await;
         // Any free port: these tests dial by number, and a fixed one would
         // collide between tests running in parallel.
@@ -140,6 +149,7 @@ impl NearSide {
             endpoint.clone(),
             addr,
             dial_timeout,
+            watchdog,
             shutdown.clone(),
             connections.clone(),
         ));
