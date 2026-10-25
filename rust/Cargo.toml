@@ -6,11 +6,13 @@ license = "MIT OR Apache-2.0"
 description = "Loopback TCP proxy that carries each connection over an iroh endpoint (dumbpipe wire format)"
 
 [dependencies]
-# Mirrors packages/iroh-ssh/Cargo.toml in sashee/nixos-test so both ends of the
-# pipe move together. Unlike that crate we do not enable `platform-verifier`:
-# the relays we talk to have ordinary public certificates, and dropping it
-# removes the Android JNI trust-store plumbing entirely.
-iroh = { version = "1.0", default-features = false, features = ["tls-ring"] }
+# The other end of the pipe is packages/iroh-ssh in sashee/nixos-test. iroh's
+# 1.x releases are meant to stay compatible on the wire, so the two ends need not
+# be on the same 1.x; check the pair on a device after moving either. Unlike that
+# crate we do not enable `platform-verifier`: the relays we talk to have ordinary
+# public certificates, and dropping it removes the Android JNI trust-store
+# plumbing entirely.
+iroh = { version = "1.4", default-features = false, features = ["tls-ring"] }
 iroh-tickets = "1.0"
 n0-error = "1.0"
 noq = "1.0"

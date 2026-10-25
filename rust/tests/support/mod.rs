@@ -82,7 +82,7 @@ impl FarSide {
                         return;
                     };
                     let (read, write) = tcp.into_split();
-                    let _ = forward_bidi(read, write, recv, send).await;
+                    let _ = forward_bidi(read, write, recv, send, proxy::STALL_TIMEOUT, &CancellationToken::new()).await;
                     drop(conn);
                 });
             }
@@ -116,6 +116,7 @@ pub struct NearSide {
     endpoint: Endpoint,
     pub port: u16,
     shutdown: CancellationToken,
+    pub connections: proxy::Connections,
 }
 
 impl NearSide {
@@ -132,6 +133,7 @@ impl NearSide {
         let listener = proxy::bind_loopback(0).await.expect("bind loopback");
         let port = listener.local_addr().expect("local_addr").port();
         let shutdown = CancellationToken::new();
+        let connections = proxy::Connections::new(&shutdown);
 
         tokio::spawn(proxy::serve(
             listener,
@@ -139,12 +141,14 @@ impl NearSide {
             addr,
             dial_timeout,
             shutdown.clone(),
+            connections.clone(),
         ));
 
         Self {
             endpoint,
             port,
             shutdown,
+            connections,
         }
     }
 

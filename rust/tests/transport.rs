@@ -339,3 +339,25 @@ async fn stopping_the_proxy_stops_answering() {
         .await
         .expect("the port stopped accepting");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_the_connections_ends_those_open_and_not_those_after() {
+    // What the app does when Android blocks its network: every connection open
+    // then is closed, so the browser opens fresh ones.
+    let (_origin, _far, near) = pipeline(|_, count| sized(&format!("response {count}"))).await;
+    let mut before = near.connect().await;
+    let response = exchange(&mut before, b"GET /1 HTTP/1.1\r\nHost: x\r\n\r\n").await;
+    assert!(String::from_utf8(response).unwrap().ends_with("response 1"));
+
+    near.connections.close_all();
+
+    let mut rest = Vec::new();
+    let closed = tokio::time::timeout(Duration::from_secs(5), before.read_to_end(&mut rest)).await;
+    assert!(matches!(closed, Ok(Ok(0))), "the open connection is closed: {closed:?}");
+
+    let mut after = near.connect().await;
+    let response = exchange(&mut after, b"GET /2 HTTP/1.1\r\nHost: x\r\n\r\n").await;
+    assert!(String::from_utf8(response).unwrap().ends_with("response 2"), "a new connection works");
+    let response = exchange(&mut after, b"GET /3 HTTP/1.1\r\nHost: x\r\n\r\n").await;
+    assert!(String::from_utf8(response).unwrap().ends_with("response 3"), "and keeps working");
+}

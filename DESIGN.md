@@ -361,6 +361,28 @@ Artwork is not relayed.
 
 ## Android specifics
 
+**The network is blocked in the background.** From Android 15, an app that is out of the
+foreground without a foreground service loses its network about five seconds after it
+leaves (blocked reason `APP_BACKGROUND`; `dumpsys netpolicy` shows the
+`<uid>-background` firewall rule), and Android destroys its sockets. Opening the system's
+file picker is enough. The iroh connections that were open across such a block may still
+carry a small request afterwards, but never bulk data again: on iroh 1.0.3 and 1.4.1
+alike, an upload on one sat for twenty minutes and more, while connections opened after
+the block worked at once. So:
+
+- `NetworkBlockWatch` registers for the default network's `onBlockedStatusChanged`, and
+  on every change (not the first report, which is the state at registration) the proxy
+  closes every connection it has open (`proxy::Connections`). The page's next requests
+  open fresh ones; a request under way at the block fails rather than hanging. When the
+  network is back, iroh is also told to look at it again (`Endpoint::network_change`).
+- Writes towards the endpoint are watched (`pipe::copy_watched`): a connection whose
+  stream takes nothing for 30 seconds while the browser has bytes for it is closed, so
+  any other stall ends as an error too. Writes towards the browser are not watched: a
+  paused `<audio>` element stops reading for as long as it is paused.
+- A page that plays music keeps its network in the background, because the playback
+  service is a foreground service (Media). Anything else in the background, such as a
+  long upload, is cut off when the block comes.
+
 **DNS.** iroh resolves relay hostnames, and a bare endpoint id, through DNS. A network
 that filters DNS answers those lookups with NXDOMAIN or a sinkhole address, and the dial
 fails as "Endpoint unreachable" with nothing to say why. So the endpoint's resolver
@@ -368,9 +390,9 @@ fails as "Endpoint unreachable" with nothing to say why. So the endpoint's resol
 dialled by IPv4 address so reaching them needs no DNS, their certificates checked with the
 compiled-in roots. There is no fallback to the network's nameservers, on purpose: that is
 the path the filter controls. A network that blocks the DoH servers themselves still
-breaks resolution. The servers are IPv4 only because iroh names a DoH server by its bare
-address, which hickory puts in the request URI, where an unbracketed IPv6 address is
-invalid. IPv4 literals still work on IPv6-only networks through 464XLAT.
+breaks resolution. The servers are IPv4 only, which still works on IPv6-only networks
+through 464XLAT. (Under iroh 1.0 it was also a necessity: its resolver, hickory, put an
+IPv6 address in the request URI without brackets. iroh 1.4's n0-dns-resolver doesn't.)
 
 The Android context `IrohBrowserApp.onCreate` installs (`NativeProxy.installContext`) is
 therefore not for DNS any more. netdev, which netwatch uses to read the interfaces, calls

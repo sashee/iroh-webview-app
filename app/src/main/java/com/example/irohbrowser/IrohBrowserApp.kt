@@ -6,13 +6,14 @@ import android.app.Application
 internal const val LOG_TAG = "irohbrowser"
 
 /**
- * Loads the native library, hands iroh an Android context, and keeps the
- * WebView off the network.
+ * Loads the native library, hands iroh an Android context, keeps the WebView
+ * off the network, and tells the proxy when Android blocks the app's network.
  *
- * All three happen here rather than in the activity because all three are
+ * All four happen here rather than in the activity because all four are
  * process-wide and must happen before the first proxy starts: the context has
- * to be installed before iroh first reads the device's interfaces, and the
- * WebView confined before it loads its first page.
+ * to be installed before iroh first reads the device's interfaces, the WebView
+ * confined before it loads its first page, and a block can come whenever the
+ * app is in the background, with or without an activity.
  */
 class IrohBrowserApp : Application() {
 
@@ -21,5 +22,6 @@ class IrohBrowserApp : Application() {
         NativeProxy.load()
         NativeProxy.installContext(this)
         Confinement.confineNetwork()
+        NetworkBlockWatch(NativeProxy).register(this)
     }
 }

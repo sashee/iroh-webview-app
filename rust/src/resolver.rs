@@ -14,20 +14,20 @@
 //! is a network that blocks the servers themselves: then resolution fails, and
 //! the dial with it, the same way it did before.
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::Ipv4Addr;
 
 use iroh::{
-    dns::{DnsProtocol, DnsResolver},
+    dns::{DnsResolver, NameserverConfig},
     tls::{default_provider, CaTlsConfig},
 };
 
-/// Cloudflare, Google and Quad9. hickory picks among them by measured latency
-/// and moves on when one fails, so the order is not a preference.
+/// Cloudflare, Google and Quad9. iroh's resolver (n0-dns-resolver) picks among
+/// them by measured latency and moves on when one fails, so the order is not a
+/// preference.
 ///
-/// IPv4 only. iroh names a DoH server by its bare address, and hickory puts that
-/// name in the request URI, where an IPv6 address without brackets is not a
-/// valid authority -- the request fails after the connection is made. IPv4
-/// literals still work on an IPv6-only network, through Android's 464XLAT.
+/// IPv4 only, which reaches them on an IPv6-only network too, through Android's
+/// 464XLAT. (iroh 1.0's resolver, hickory, could not use an IPv6 address here:
+/// it put it in the request URI without brackets.)
 pub const DOH_SERVERS: [Ipv4Addr; 6] = [
     Ipv4Addr::new(1, 1, 1, 1),
     Ipv4Addr::new(1, 0, 0, 1),
@@ -42,19 +42,15 @@ pub fn doh() -> std::io::Result<DnsResolver> {
     over(DOH_SERVERS)
 }
 
-/// A resolver that asks only `servers`, over HTTPS on port 443 at hickory's
-/// default path, `/dns-query`.
+/// A resolver that asks only `servers`, over HTTPS on port 443 at the standard
+/// path, `/dns-query`.
 ///
 /// No system configuration is read: iroh's builder starts from an empty server
 /// list and adds only these.
 fn over(servers: impl IntoIterator<Item = Ipv4Addr>) -> std::io::Result<DnsResolver> {
     let tls = CaTlsConfig::embedded().client_config(default_provider())?;
     Ok(DnsResolver::builder()
-        .with_nameservers(
-            servers
-                .into_iter()
-                .map(|ip| (SocketAddr::from((ip, 443)), DnsProtocol::Https)),
-        )
+        .add_nameserver_configs(servers.into_iter().map(|ip| NameserverConfig::https(ip.into())))
         .tls_client_config(tls)
         .build())
 }

@@ -38,4 +38,11 @@ interface ProxyController {
 
     /** The identity of the endpoint [ticket] names, or null when it is not a ticket. Pure. */
     fun identify(ticket: String): EndpointIdentity?
+
+    /**
+     * Android blocked this app's network ([blocked]), or gave it back. The
+     * running proxy, if any, closes every connection it has open, and when
+     * the network is back asks iroh to look at it again. See [NetworkBlockWatch].
+     */
+    fun networkBlocked(blocked: Boolean)
 }

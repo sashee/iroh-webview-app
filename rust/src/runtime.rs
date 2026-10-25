@@ -42,6 +42,8 @@ pub struct Running {
     port: u16,
     label: String,
     shutdown: CancellationToken,
+    connections: proxy::Connections,
+    endpoint: Endpoint,
     // Declared last so it is dropped last: the runtime must outlive the tasks
     // cancellation is asking to finish.
     runtime: Option<Runtime>,
@@ -56,6 +58,19 @@ impl Running {
     /// The DNS label identifying this endpoint's origin.
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    /// Android blocked the app's network (`blocked`), or gave it back. Either
+    /// way the connections open now are closed ([`proxy::Connections`]): those
+    /// open across a block don't recover. When it is given back, iroh is told
+    /// to look at the network again, which its docs say costs nothing when
+    /// nothing changed.
+    pub fn network_blocked(&self, blocked: bool) {
+        self.connections.close_all();
+        if let (false, Some(runtime)) = (blocked, &self.runtime) {
+            let endpoint = self.endpoint.clone();
+            runtime.spawn(async move { endpoint.network_change().await });
+        }
     }
 }
 
@@ -105,18 +120,22 @@ pub fn bind_with(
         .port();
 
     let shutdown = CancellationToken::new();
+    let connections = proxy::Connections::new(&shutdown);
     runtime.spawn(proxy::serve(
         listener,
-        endpoint,
+        endpoint.clone(),
         addr,
         dial_timeout,
         shutdown.clone(),
+        connections.clone(),
     ));
 
     Ok(Running {
         port,
         label,
         shutdown,
+        connections,
+        endpoint,
         runtime: Some(runtime),
     })
 }

@@ -237,3 +237,11 @@ metadata and handlers, for example media-store (DESIGN.md, Media).
 29. Pause and wait ten minutes: the notification goes.
 30. Open an endpoint whose pages set no Media Session metadata, such as pw-mgr: no
     notification, and everything works as before.
+
+### Network blocked in the background
+
+31. Open the file picker from a page and wait 10 seconds before picking, then upload
+    something large. It goes through at full speed. `adb logcat -s irohbrowser:V` shows
+    `network blocked by Android: closing the proxy's connections` and then `network back`.
+32. Start a large upload and switch to another app before it finishes: once the block
+    comes, about five seconds later, the upload fails with an error rather than hanging.

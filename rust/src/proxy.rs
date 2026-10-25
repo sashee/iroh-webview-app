@@ -9,7 +9,11 @@
 //! proxy byte-transparent. HTTP/1.1 keep-alive, pipelining, chunked bodies and
 //! `Range` all happen inside a stream we never inspect.
 
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use iroh::{Endpoint, EndpointAddr};
 use tokio::{io::AsyncWriteExt, net::TcpListener};
@@ -26,17 +30,66 @@ use crate::{gateway, pipe::forward_bidi, ALPN, HANDSHAKE};
 /// not have to spend it.
 pub const DIAL_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How long the stream towards the endpoint may take nothing, while the
+/// browser has bytes for it, before the connection is closed
+/// ([`crate::pipe::copy_watched`]). A browser then sees a failed request, which
+/// it can retry, rather than one that never ends.
+pub const STALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The connections the proxy carries, closable all at once.
+///
+/// Each accepted connection holds the token of the generation it was accepted
+/// in, a child of the proxy's shutdown token. [`Connections::close_all`]
+/// cancels that generation, which ends every connection in it, and starts the
+/// next one, so the connections accepted afterwards are untouched. Android
+/// blocking the app's network is what calls it: an iroh connection that was
+/// open across a block may carry small requests afterwards but never bulk data
+/// again, so the browser is made to open fresh ones (DESIGN.md, Android
+/// specifics).
+#[derive(Clone, Debug)]
+pub struct Connections {
+    shutdown: CancellationToken,
+    generation: Arc<Mutex<CancellationToken>>,
+}
+
+impl Connections {
+    pub fn new(shutdown: &CancellationToken) -> Self {
+        Self {
+            shutdown: shutdown.clone(),
+            generation: Arc::new(Mutex::new(shutdown.child_token())),
+        }
+    }
+
+    /// Close every connection open now. Those accepted afterwards carry on.
+    pub fn close_all(&self) {
+        let fresh = self.shutdown.child_token();
+        let ended = std::mem::replace(&mut *self.lock(), fresh);
+        ended.cancel();
+    }
+
+    fn current(&self) -> CancellationToken {
+        self.lock().clone()
+    }
+
+    /// Recovered from poisoning: a token has no invariant a panic could break.
+    fn lock(&self) -> std::sync::MutexGuard<'_, CancellationToken> {
+        self.generation.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 /// Accept connections until `shutdown` is cancelled.
 ///
 /// Every accepted connection is handled on its own task, so a slow dial to the
 /// far side never blocks the next request — a browser opens several connections
-/// per origin and expects all of them to make progress.
+/// per origin and expects all of them to make progress. Each one ends with
+/// `shutdown`, or when `connections` closes its generation.
 pub async fn serve(
     listener: TcpListener,
     endpoint: Endpoint,
     addr: EndpointAddr,
     dial_timeout: Duration,
     shutdown: CancellationToken,
+    connections: Connections,
 ) {
     loop {
         let accepted = tokio::select! {
@@ -59,9 +112,9 @@ pub async fn serve(
 
         let endpoint = endpoint.clone();
         let addr = addr.clone();
-        let shutdown = shutdown.clone();
+        let stop = connections.current();
         tokio::spawn(async move {
-            handle(stream, peer, endpoint, addr, dial_timeout, shutdown).await;
+            handle(stream, peer, endpoint, addr, dial_timeout, stop).await;
         });
     }
 }
@@ -73,7 +126,7 @@ async fn handle(
     endpoint: Endpoint,
     addr: EndpointAddr,
     dial_timeout: Duration,
-    shutdown: CancellationToken,
+    stop: CancellationToken,
 ) {
     // Every local peer is served. There is no way to tell one from another on
     // Android -- see the note on the loopback port in `lib.rs`.
@@ -81,7 +134,7 @@ async fn handle(
 
     let connection = tokio::select! {
         dialed = tokio::time::timeout(dial_timeout, endpoint.connect(addr, ALPN)) => dialed,
-        _ = shutdown.cancelled() => return,
+        _ = stop.cancelled() => return,
     };
 
     let connection = match connection {
@@ -107,8 +160,8 @@ async fn handle(
 
     let (read, write) = stream.into_split();
     let forwarded = tokio::select! {
-        forwarded = forward_bidi(read, write, recv, send) => forwarded,
-        _ = shutdown.cancelled() => return,
+        forwarded = forward_bidi(read, write, recv, send, STALL_TIMEOUT, &stop) => forwarded,
+        _ = stop.cancelled() => return,
     };
     // An error here is the ordinary shape of a browser closing a connection, so
     // it is not worth a warning -- but the byte counts are what tell you whether

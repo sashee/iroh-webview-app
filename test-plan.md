@@ -54,6 +54,13 @@ that needs a real Chromium. Those are the on-device checks in [README.md](README
 - the bound port is the endpoint's preferred one
 - a taken preferred port falls back instead of failing
 
+### Forwarding with a stall limit — `src/pipe.rs`
+
+- everything is copied until the reader ends
+- a writer that takes nothing fails the copy once the stall limit passes
+- a slow writer that keeps taking is not a stalled one
+- a reader that sends nothing for a while is not a stall
+
 ### Transport, end to end — `tests/transport.rs`
 
 Browser → proxy → iroh → far-side listener → origin server, and back. Each of these is a
@@ -74,6 +81,8 @@ property the design promises, and each passes for the same reason: nothing parse
 - an unreachable endpoint produces a 502 rather than a hang
 - the origin going away closes the browser connection rather than hanging
 - stopping the proxy stops answering
+- closing the connections (what a network block does) ends those open, and connections
+  made afterwards work, more than one request each
 
 ## Kotlin
 
@@ -363,6 +372,13 @@ code under test.
 - a button goes back by its web name, and a seek in seconds
 - play and pause are always offered, the rest only with the page's handler; seeking also
   needs a duration
+
+### Network blocks — `NetworkBlockWatchTest`
+
+- the first report, the state at registration, is only remembered
+- a block, and the network coming back, are each passed on to the proxy once
+- starting blocked, the network coming back is a change
+- registering listens to the default network's blocked status
 
 ### Where the media session bridge is offered — `MediaWiringTest`
 

@@ -13,7 +13,7 @@ use std::sync::{Mutex, OnceLock};
 
 use jni::{
     objects::{JClass, JObject, JString},
-    sys::{jint, jstring},
+    sys::{jboolean, jint, jstring},
     JNIEnv,
 };
 
@@ -71,7 +71,7 @@ pub extern "system" fn Java_com_example_irohbrowser_NativeProxy_nativeInstallCon
             .with_filter(
                 android_logger::FilterBuilder::new()
                     .parse(
-                        "info,iroh=warn,noq=warn,hickory=warn,rustls=warn,\
+                        "info,iroh=warn,noq=warn,n0_dns_resolver=warn,rustls=warn,\
                          netwatch=warn,portmapper=warn,tracing=warn,\
                          iroh_webview_proxy=info",
                     )
@@ -157,6 +157,25 @@ pub extern "system" fn Java_com_example_irohbrowser_NativeProxy_nativeIdentity(
     match identity.and_then(|identity| env.new_string(identity).ok()) {
         Some(identity) => identity.into_raw(),
         None => JObject::null().into_raw() as jstring,
+    }
+}
+
+/// Android blocked this app's network (`blocked`), or gave it back: the running
+/// proxy, if there is one, closes the connections it has open
+/// ([`Running::network_blocked`]).
+#[no_mangle]
+pub extern "system" fn Java_com_example_irohbrowser_NativeProxy_nativeNetworkBlocked(
+    _env: JNIEnv,
+    _class: JClass,
+    blocked: jboolean,
+) {
+    if let Some(running) = lock().as_ref() {
+        let blocked = blocked != 0;
+        log::info!(
+            "network {}: closing the proxy's connections",
+            if blocked { "blocked by Android" } else { "back" }
+        );
+        running.network_blocked(blocked);
     }
 }
 

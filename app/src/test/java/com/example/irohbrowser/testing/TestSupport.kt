@@ -103,6 +103,11 @@ class FakeProxy : ProxyController {
 
     fun preferredPortFor(ticket: String): Int = 20000 + ticket.hashCode().mod(10000)
 
+    /** Recorded as `"blocked:true"` or `"blocked:false"`. */
+    override fun networkBlocked(blocked: Boolean) {
+        calls += "blocked:$blocked"
+    }
+
     /**
      * Stands in for the Rust side's endpoint-id derivation: stable per ticket,
      * distinct between tickets, and a valid DNS label.

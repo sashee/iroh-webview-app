@@ -51,6 +51,10 @@ object NativeProxy : ProxyController {
         nativeStop()
     }
 
+    override fun networkBlocked(blocked: Boolean) {
+        nativeNetworkBlocked(blocked)
+    }
+
     override fun identify(ticket: String): EndpointIdentity? {
         val identity = nativeIdentity(ticket) ?: return null
         val label = identity.substringBeforeLast(':')
@@ -63,4 +67,5 @@ object NativeProxy : ProxyController {
     private external fun nativeLabel(): String?
     private external fun nativeStop()
     private external fun nativeIdentity(ticket: String): String?
+    private external fun nativeNetworkBlocked(blocked: Boolean)
 }

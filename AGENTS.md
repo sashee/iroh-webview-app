@@ -154,14 +154,25 @@ string: every key a site has derived from a result would change with it.
 **To put a local service behind iroh for testing, use `iroh-uds-listen`** from
 sashee/nixos-test's `packages/iroh-ssh`, the same far side the monitoring platform has.
 nixpkgs' `dumbpipe` speaks the same wire format, but the pinned one is built on iroh 0.35,
-which the app's iroh 1.0 cannot reach.
+which the app's iroh 1.x cannot reach.
 
 **Name resolution is DoH only** (`resolver.rs`). Do not add the network's nameservers
-back, not even as a fallback: a network that filters DNS controls exactly that path. Keep
-the servers IPv4. iroh names a DoH server by its bare address, which hickory uses as the
-URI authority, and an unbracketed IPv6 address there fails every request. The ignored test
+back, not even as a fallback: a network that filters DNS controls exactly that path. The
+servers are IPv4, which also reaches them on IPv6-only networks through 464XLAT; iroh 1.0's
+resolver (hickory) failed every request to an IPv6 one, and 1.4's (n0-dns-resolver) brackets
+it correctly. The ignored test
 `every_server_answers_over_https` checks the real servers (`cargo test --lib -- --ignored`,
 needs network).
+
+**Android blocks the app's network five seconds into the background** (Android 15+,
+`APP_BACKGROUND`), and iroh connections open across a block never carry bulk data again.
+`NetworkBlockWatch` makes the proxy close them all on each change; the first report is
+the state at registration, not a change, and closing then would kill the first page
+load. Any task that holds a socket must end with its connection's stop token:
+`forward_bidi` runs each direction on a spawned task, which dropping its future would not
+end, so it takes the token (`closing_the_connections_ends_those_open_and_not_those_after`).
+Only writes towards the endpoint have a stall timeout; never add one towards the browser,
+which stops reading whenever a track is paused.
 
 **Release must keep `panic = "unwind"`.** netdev, under netwatch, probes for the JNI
 context by catching a panic. `abort` turns a missing context into a crash.
@@ -242,7 +253,7 @@ adb logcat -s irohbrowser:V
 ```
 
 `android_logger` routes the whole `log` facade, so the dependencies log under our tag too.
-Our crate is at Info and iroh, noq, hickory and rustls at Warn: at Info, iroh logs every
+Our crate is at Info and iroh, noq, n0_dns_resolver and rustls at Warn: at Info, iroh logs every
 path event and every send, which on a Pixel 6a buried everything else. A tracing span
 without fields arrives under the target `tracing::span`, not its own module, so that needs
 its own `tracing=warn`. logcat still shows such a line as `iroh::…`, because that is the
