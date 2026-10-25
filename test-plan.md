@@ -102,6 +102,8 @@ The selection rules, which decide which server the app shows.
   that is the whole of a short ticket is kept
 - renaming trims, and renaming to blank goes back to no name
 - the display name is the user's, else the label, else the ticket
+- autoplay is off until turned on, for that endpoint only; it round-trips through JSON,
+  is saved only when on, and endpoints saved before it existed read as off
 
 ### Persistence — `EndpointStoreTest`
 
@@ -200,16 +202,20 @@ later.
 - pinch-to-zoom is enabled, and the on-screen zoom buttons are hidden
 - pages are laid out the way a browser lays them out
 - no JavaScript interface: `addJavascriptInterface` is checked against the compiled
-  classes of the activity and of the bridge installer, since a call that never happens
-  leaves nothing for reflection to find
-- the passkey script and the clipboard script each look for the bridge object the app
+  classes of the activity, the bridge installer and the media playback, since a call that
+  never happens leaves nothing for reflection to find
+- the passkey, clipboard and media session scripts each look for the bridge object the app
   installs, by the same name
+- media waits for a tap by default
 
 ### Manifest and resources — `ManifestAndResourceTest`
 
 Declarations, which nothing else would catch.
 
-- the permissions are exactly `INTERNET`, `ACCESS_NETWORK_STATE` and `USE_BIOMETRIC`
+- the permissions are exactly `INTERNET`, `ACCESS_NETWORK_STATE`, `USE_BIOMETRIC`,
+  `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_MEDIA_PLAYBACK`; no `POST_NOTIFICATIONS`
+- the playback service is the only service, is not exported, and is of the media playback
+  type
 - the manifest names our Application class, and it is an Application
 - the manifest does not enable cleartext traffic globally
 - backups are off
@@ -346,6 +352,30 @@ code under test.
 - a page's copy lands on the clipboard marked sensitive
 - a page behind the settings screen, or in a window without focus, copies nothing
 
+### The media session bridge — `MediaSessionBridgeTest`
+
+- what a page plays is read: titles, playing or not, its buttons, and its position and
+  duration in milliseconds
+- another origin, or the same host on another port, is not heard
+- no metadata means nothing plays; anything that is not a report means nothing at all
+- titles are cut to 200 characters and lose control characters; values of the wrong type
+  are empty or unknown, and the position stays within the duration
+- a button goes back by its web name, and a seek in seconds
+- play and pause are always offered, the rest only with the page's handler; seeking also
+  needs a duration
+
+### Where the media session bridge is offered — `MediaWiringTest`
+
+- to the running endpoint's exact origin, moved on a switch
+- a page that never reports shows nothing
+- what a page plays is shown, and the system's buttons come back to that page as
+  commands; another origin's report is ignored
+- a report without metadata, a switch, a new page in the main frame and closing the app
+  each end it
+- back on the first page sends the app to the background while something plays, and
+  closes it otherwise, as before
+- media needs a tap unless the endpoint allows otherwise, and that follows a switch
+
 ### The settings screen's model — `SettingsTest`
 
 Plain JUnit: it is a pure function of the saved state.
@@ -377,6 +407,8 @@ Driven through the menu, the buttons and the dialogs.
   without reconnecting
 - the app bar says where you are, and its back arrow leaves the list
 - back from the list, and from "Add endpoint", returns to the page
+- the autoplay switch is off by default; turning it on saves it and applies to the open
+  page at once, and turning it on for another endpoint leaves the open page as it is
 
 ### Persistence — `PasskeyStoreTest`
 
@@ -425,6 +457,25 @@ In Node, against a fake bridge and a fake `navigator.clipboard`.
   goes to the browser's own `write`; a `write` of something not a list rejects
 - without the bridge, or without a clipboard, the script changes nothing
 
+## The media session script — `app/src/test/js/media-session.test.mjs`
+
+In Node, against a fake bridge, a clock, a document whose media events the test fires,
+and a recording `navigator.mediaSession`.
+
+- a page that never sets metadata sends nothing, even while it plays
+- what the page sets is sent together, once its code has run, with only the buttons the
+  app knows
+- the WebView's own session still gets every call, and its argument checks still throw;
+  without one, the page gets one, and `MediaMetadata`
+- the position is the page's, moved on while it plays and not while paused; without one,
+  the playing media element's
+- the same state is not sent twice; leaving the page sends "nothing plays", coming back
+  from the back-forward cache sends it again
+- a button from the app calls the page's handler with what a browser passes; without a
+  handler, play and pause act on the media element; removed handlers are not called or
+  offered; garbage is ignored
+- without the bridge, or in a frame, the page is left as it was
+
 ## Gaps, stated rather than hidden
 
 - **`*.localhost` resolution and cookie keying** are Chromium behaviour. Robolectric's
@@ -442,6 +493,9 @@ In Node, against a fake bridge and a fake `navigator.clipboard`.
   generation, per-use authentication, `BiometricPrompt`, and the WebView's message
   listener and document-start script. Robolectric has none of them. `AndroidPasskeys.kt`
   is kept thin for that reason. The passkey checks in README.md cover it.
+- **The platform half of playback** has no automated tests: Android's `MediaSession`, the
+  notification, the foreground service, and the renderer priority. `Playback.kt` is kept
+  thin for that reason; README.md's playback checks cover it.
 - **Whether a clip marked sensitive is hidden** is the system's and the keyboard's
   behaviour. The tests check that the flag is set, and README.md's clipboard checks that
   it does what it should.

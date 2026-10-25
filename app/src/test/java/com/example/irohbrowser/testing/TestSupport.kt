@@ -14,7 +14,10 @@ import com.example.irohbrowser.Endpoints
 import com.example.irohbrowser.KeyOperation
 import com.example.irohbrowser.KeyStorage
 import com.example.irohbrowser.KeyVault
+import com.example.irohbrowser.MediaAction
+import com.example.irohbrowser.MediaPlayback
 import com.example.irohbrowser.Outcome
+import com.example.irohbrowser.PageMedia
 import com.example.irohbrowser.PageScripts
 import com.example.irohbrowser.PasskeyError
 import com.example.irohbrowser.PasskeyPlatform
@@ -349,6 +352,39 @@ class FakePageScripts : PageScripts {
     }
 }
 
+/**
+ * A [MediaPlayback] that records what it was asked to show, and lets a test
+ * press the system's buttons. Like the real one, it shows nothing until the
+ * page plays.
+ */
+class FakeMediaPlayback : MediaPlayback {
+    /** Every media shown, in order. */
+    val shown = mutableListOf<PageMedia>()
+
+    var ends = 0
+        private set
+
+    private var press: ((MediaAction, Long?) -> Unit)? = null
+
+    override val active: Boolean
+        get() = press != null
+
+    override fun show(media: PageMedia, press: (MediaAction, Long?) -> Unit) {
+        if (this.press == null && !media.playing) return
+        shown += media
+        this.press = press
+    }
+
+    override fun end() {
+        if (press == null) return
+        ends++
+        press = null
+    }
+
+    /** The user presses a button of the notification, the lock screen or a headset. */
+    fun pressButton(action: MediaAction, seekToMs: Long? = null) = (press ?: error("nothing is shown"))(action, seekToMs)
+}
+
 /** A main-frame GET of [url], as the WebView hands it to its clients. */
 fun request(url: String, gesture: Boolean = false): WebResourceRequest = object : WebResourceRequest {
     override fun getUrl(): Uri = Uri.parse(url)
@@ -377,9 +413,15 @@ class TestHarness(
 
     val clipboardBridge = FakeBridgeInstaller()
 
+    val mediaBridge = FakeBridgeInstaller()
+
+    val media = FakeMediaPlayback()
+
     fun install() {
         store.save(Endpoints())
-        AppContainer.install(AppContainer(store, proxy, passkeys.platform, clipboardBridge, serviceWorkers, pageScripts) { siteData })
+        AppContainer.install(
+            AppContainer(store, proxy, passkeys.platform, clipboardBridge, serviceWorkers, pageScripts, mediaBridge, media) { siteData },
+        )
     }
 
     /** Seed the saved endpoints before the activity starts. */

@@ -41,4 +41,7 @@
     <string name="key_software">in software</string>
     <string name="key_unknown">in secure hardware</string>
     <string name="key_missing">missing</string>
+    <string name="settings_autoplay">Media plays without a tap</string>
+    <string name="settings_autoplay_explained">Lets this endpoint\'s pages start media on their own, as the notification\'s buttons need for the next track. Turn it on only for endpoints you trust.</string>
+    <string name="playback_channel">Playback</string>
 </resources>

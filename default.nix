@@ -92,6 +92,7 @@ let
     PASSKEYS_JS=${./app/src/main/assets/passkeys.js} node --test ${./app/src/test/js/passkeys.test.mjs}
     NO_WEBRTC_JS=${./app/src/main/assets/no-webrtc.js} node --test ${./app/src/test/js/no-webrtc.test.mjs}
     CLIPBOARD_JS=${./app/src/main/assets/clipboard.js} node --test ${./app/src/test/js/clipboard.test.mjs}
+    MEDIA_SESSION_JS=${./app/src/main/assets/media-session.js} node --test ${./app/src/test/js/media-session.test.mjs}
     touch $out
   '';
 in

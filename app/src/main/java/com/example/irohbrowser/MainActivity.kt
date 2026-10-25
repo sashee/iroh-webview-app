@@ -3,6 +3,7 @@ package com.example.irohbrowser
 import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -88,6 +89,9 @@ class MainActivity : AppCompatActivity() {
      */
     private var bridgeWithdrawals: List<() -> Unit> = emptyList()
 
+    /** The WebView's own renderer priority, to go back to once nothing plays. */
+    private var rendererDefault: Pair<Int, Boolean> = WebView.RENDERER_PRIORITY_IMPORTANT to true
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -158,10 +162,11 @@ class MainActivity : AppCompatActivity() {
             useWideViewPort = true
             loadWithOverviewMode = true
         }
+        runCatching { rendererDefault = webView.rendererRequestedPriority to webView.rendererPriorityWaivedWhenNotVisible }
         // Deliberately absent: addJavascriptInterface. The ways from page
-        // JavaScript into the app are the passkey and clipboard bridges
-        // (offerBridges), which the WebView restricts to the endpoint's origin
-        // and which carry data, not callable methods.
+        // JavaScript into the app are the passkey, clipboard and media session
+        // bridges (offerBridges), which the WebView restricts to the endpoint's
+        // origin and which carry data, not callable methods.
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
                 view: WebView,
@@ -173,6 +178,10 @@ class MainActivity : AppCompatActivity() {
             // shouldOverrideUrlLoading.
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
                 refusal(request.url?.toString())
+
+            // A new page in the main frame: whatever the last one played went
+            // with it, even if it never said so.
+            override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) = endMedia()
 
             override fun onPageFinished(view: WebView, url: String?) {
                 val running = binding ?: return
@@ -384,6 +393,7 @@ class MainActivity : AppCompatActivity() {
         when (val result = container.proxy.start(endpoint.ticket)) {
             is ProxyResult.Started -> {
                 binding = result.binding
+                webView.settings.mediaPlaybackRequiresUserGesture = !endpoint.autoplay
                 // Before the load: the scripts are injected into documents
                 // that start after this, and the first page should have them.
                 offerBridges(result.binding)
@@ -411,8 +421,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Give this endpoint's pages, and only them, a way to reach its passkeys
-     * and to copy text marked sensitive.
+     * Give this endpoint's pages, and only them, a way to reach its passkeys,
+     * to copy text marked sensitive, and to show what they play.
      *
      * The origin is fixed here, from the proxy that was just started: the
      * origin a ceremony signs for is never one the page supplied. The name is
@@ -431,14 +441,42 @@ class MainActivity : AppCompatActivity() {
                 ClipboardBridge.answer(message, sourceOrigin, running, onScreen) { copySensitive(this, it) }
                     ?.let(reply)
             },
+            container.mediaBridge.install(webView, origin) { message, sourceOrigin, reply ->
+                when (val report = MediaSessionBridge.parse(message, sourceOrigin, running)) {
+                    null -> Unit
+                    MediaReport.Nothing -> endMedia()
+                    is MediaReport.Current -> {
+                        container.media.show(report.media) { action, seekToMs -> reply(MediaSessionBridge.command(action, seekToMs)) }
+                        keepRenderer()
+                    }
+                }
+            },
         )
     }
 
-    /** Withdraw the bridges, and any prompt the departing endpoint's page had raised. */
+    /** Withdraw the bridges, and any prompt the departing endpoint's page had raised, and what it played. */
     private fun withdrawBridges() {
         passkeys.cancel()
         bridgeWithdrawals.forEach { it() }
         bridgeWithdrawals = emptyList()
+        endMedia()
+    }
+
+    private fun endMedia() {
+        container.media.end()
+        keepRenderer()
+    }
+
+    /**
+     * While something plays, the page's renderer stays as important as the
+     * app even when it is not on screen; by default Android may reclaim a
+     * hidden one, and the music with it. The foreground service keeps the app.
+     * Best effort: a WebView that cannot do this still plays, in the
+     * foreground at least.
+     */
+    private fun keepRenderer() {
+        val (priority, waived) = if (container.media.active) WebView.RENDERER_PRIORITY_IMPORTANT to false else rendererDefault
+        runCatching { webView.setRendererPriorityPolicy(priority, waived) }
     }
 
     private fun showEntry() {
@@ -515,6 +553,12 @@ class MainActivity : AppCompatActivity() {
             if (endpoints.all.isNotEmpty()) showSettings()
         }
 
+        override fun setAutoplay(index: Int, on: Boolean) {
+            endpoints = container.store.update { it.setAutoplay(index, on) }
+            if (index == endpoints.selectedIndex) webView.settings.mediaPlaybackRequiresUserGesture = !on
+            showSettings()
+        }
+
         override fun deletePasskey(credentialId: String) {
             container.passkeys.store.forget(credentialId, container.passkeys.vault)
             showSettings()
@@ -556,6 +600,9 @@ class MainActivity : AppCompatActivity() {
             // The ticket field, reached from "Add endpoint" while one is open.
             entry.visibility == android.view.View.VISIBLE && binding != null -> showWebView()
             webView.visibility == android.view.View.VISIBLE && webView.canGoBack() -> webView.goBack()
+            // Leaving would close the page, and stop what it plays: go to the
+            // background instead, as a music app does.
+            container.media.active -> moveTaskToBack(true)
             else -> {
                 @Suppress("DEPRECATION")
                 super.onBackPressed()

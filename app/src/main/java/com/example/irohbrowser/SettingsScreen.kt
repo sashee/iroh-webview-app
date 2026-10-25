@@ -11,6 +11,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import com.google.android.material.R as MaterialR
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.materialswitch.MaterialSwitch
 import java.text.DateFormat
 import java.util.Date
 
@@ -19,6 +20,7 @@ interface SettingsActions {
     fun open(index: Int)
     fun rename(index: Int, name: String)
     fun remove(index: Int)
+    fun setAutoplay(index: Int, on: Boolean)
     fun deletePasskey(credentialId: String)
     fun addEndpoint()
 }
@@ -31,8 +33,8 @@ interface SettingsActions {
  * own -- the activity renders it again after every change -- so what it shows
  * is never older than the last action.
  *
- * Buttons carry tags such as `remove:1` and `delete:<credential id>`, which is
- * how the tests find them.
+ * Buttons carry tags such as `remove:1` and `delete:<credential id>`, and the
+ * autoplay switch `autoplay:1`, which is how the tests find them.
  */
 class SettingsScreen(private val content: LinearLayout, private val actions: SettingsActions) {
 
@@ -69,6 +71,15 @@ class SettingsScreen(private val content: LinearLayout, private val actions: Set
                 addView(button(R.string.settings_remove, "remove:${row.index}") { askToRemove(row) })
             },
         )
+        addView(
+            MaterialSwitch(context).apply {
+                text = context.getString(R.string.settings_autoplay)
+                tag = "autoplay:${row.index}"
+                isChecked = row.autoplay
+                setOnCheckedChangeListener { _, on -> actions.setAutoplay(row.index, on) }
+            },
+        )
+        addView(small(context.getString(R.string.settings_autoplay_explained)))
         if (row.passkeys.isEmpty()) {
             addView(small(context.getString(R.string.settings_no_passkeys)))
         } else {

@@ -13,8 +13,12 @@ import org.json.JSONObject
  * [name] is null until the user gives one. The fallback is computed rather than
  * stored, so it can be the endpoint's label, which only the Rust side can read
  * out of a ticket.
+ *
+ * [autoplay] lets the endpoint's pages play media without a tap first, which a
+ * browser otherwise asks for. Off unless the user turns it on: with it, the
+ * notification's buttons can start the next track while the app is hidden.
  */
-data class Endpoint(val ticket: String, val name: String? = null) {
+data class Endpoint(val ticket: String, val name: String? = null, val autoplay: Boolean = false) {
 
     /**
      * What to call it: the user's name, else the endpoint's label -- the same
@@ -86,6 +90,14 @@ data class Endpoints(
             this
         }
 
+    /** Let the endpoint at [index] play media without a tap, or not. */
+    fun setAutoplay(index: Int, on: Boolean): Endpoints =
+        if (index in all.indices) {
+            copy(all = all.mapIndexed { at, e -> if (at == index) e.copy(autoplay = on) else e })
+        } else {
+            this
+        }
+
     companion object {
         /**
          * Parse the saved form, falling back to empty on anything unreadable.
@@ -102,7 +114,7 @@ data class Endpoints(
                     val entry = array.optJSONObject(at) ?: return@mapNotNull null
                     val ticket = entry.optString("ticket").takeIf { it.isNotBlank() }
                         ?: return@mapNotNull null
-                    Endpoint(ticket, userName(ticket, entry.optString("name")))
+                    Endpoint(ticket, userName(ticket, entry.optString("name")), entry.optBoolean("autoplay", false))
                 }
                 val selected = root.optInt("selected", -1)
                 Endpoints(all, if (selected in all.indices) selected else -1)
@@ -132,7 +144,8 @@ data class Endpoints(
             array.put(
                 JSONObject()
                     .put("ticket", endpoint.ticket)
-                    .apply { endpoint.name?.let { put("name", it) } },
+                    .apply { endpoint.name?.let { put("name", it) } }
+                    .apply { if (endpoint.autoplay) put("autoplay", true) },
             )
         }
         return JSONObject()

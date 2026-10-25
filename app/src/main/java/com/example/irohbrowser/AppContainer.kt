@@ -19,6 +19,10 @@ class AppContainer(
     val clipboardBridge: BridgeInstaller,
     val serviceWorkers: ServiceWorkerRequests,
     val pageScripts: PageScripts,
+    /** The bridge `assets/media-session.js` relays the page's Media Session through (see [MediaSessionBridge]). */
+    val mediaBridge: BridgeInstaller,
+    /** What shows the system what a page plays. Process-wide, like the service holding its notification. */
+    val media: MediaPlayback,
     /**
      * How to reach the browser's stored site data. A factory rather than a
      * value because the real one needs the activity's WebView, which does not
@@ -53,6 +57,8 @@ class AppContainer(
                 clipboardBridge = WebViewBridgeInstaller(ClipboardBridge.NAME, ClipboardBridge.SCRIPT_ASSET),
                 serviceWorkers = PlatformServiceWorkerRequests,
                 pageScripts = WebViewPageScripts,
+                mediaBridge = WebViewBridgeInstaller(MediaSessionBridge.NAME, MediaSessionBridge.SCRIPT_ASSET),
+                media = AndroidMediaPlayback(context),
             )
     }
 }

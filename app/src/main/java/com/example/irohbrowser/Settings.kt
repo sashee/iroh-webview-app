@@ -22,6 +22,8 @@ data class EndpointRow(
     /** Whether it is the one on screen. */
     val open: Boolean,
     val passkeys: List<PasskeyRow>,
+    /** Whether its pages may play media without a tap. */
+    val autoplay: Boolean = false,
 )
 
 /** Everything the settings screen shows. */
@@ -66,6 +68,7 @@ object Settings {
                 passkeys = passkeys
                     .filter { label != null && it.rpId == Origins.host(label) }
                     .map { row(it, storage) },
+                autoplay = endpoint.autoplay,
             )
         }
         val claimed = rows.flatMap { it.passkeys }.map { it.credentialId }.toSet()

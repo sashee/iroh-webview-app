@@ -2,7 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
-      Two networking permissions, and one for passkeys. Downloads need none:
+      Two networking permissions, one for passkeys and two for playing in the
+      background. Downloads need none:
       scoped storage covers DownloadManager from API 29, and minSdk is 34. The
       app reads no storage, no contacts and no location, and a reviewer should
       be able to see that from here.
@@ -23,6 +24,14 @@
       data, only the right to show the system prompt.
     -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!--
+      Playing in the background: while a page plays, a foreground service of
+      type mediaPlayback holds the player's notification, and keeps Android
+      from freezing the app, and the page with it, when the screen goes off.
+      No notification permission: a media session's notification needs none.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <application
         android:name=".IrohBrowserApp"
@@ -45,5 +54,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".PlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
     </application>
 </manifest>

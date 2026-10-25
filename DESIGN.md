@@ -154,13 +154,15 @@ cookie and is discarded when the process does, whatever the app does.
   after a switch, and a restored page on the wrong port is replaced by the front page.
   WebSockets don't pass through either hook, and the proxy override lets `*.localhost`
   through on every port. But only a page already loaded from the endpoint can open one.
-- **Two bridges from page JavaScript into the app: passkeys and the clipboard.** Each is a
-  `WebMessageListener` that the WebView restricts to the running endpoint's exact origin,
-  and each carries data, not callable methods. The passkey bridge accepts two operations,
-  create and get, and each needs a fingerprint before it signs anything (see
-  [Passkeys](#passkeys)). The clipboard bridge accepts text to copy, and nothing else (see
-  [Clipboard](#clipboard)). `addJavascriptInterface` is still absent: `WebViewConfigTest`
-  asserts that the compiled classes do not reference it at all.
+- **Three bridges from page JavaScript into the app: passkeys, the clipboard and the media
+  session.** Each is a `WebMessageListener` that the WebView restricts to the running
+  endpoint's exact origin, and each carries data, not callable methods. The passkey bridge
+  accepts two operations, create and get, and each needs a fingerprint before it signs
+  anything (see [Passkeys](#passkeys)). The clipboard bridge accepts text to copy, and
+  nothing else (see [Clipboard](#clipboard)). The media session bridge accepts what a page
+  says it plays, and sends back the name of a button (see [Media](#media)).
+  `addJavascriptInterface` is still absent: `WebViewConfigTest` asserts that the compiled
+  classes do not reference it at all.
 - **External links leave the WebView, when the user taps them.** `http`/`https` outside
   our own origin go to the real browser, but only with a gesture
   (`WebResourceRequest.hasGesture`). Without one, a page could send itself elsewhere on a
@@ -307,6 +309,55 @@ So the app writes the clip itself:
 through Chromium and are not marked, and neither is a `write` with no `text/plain`. A page
 that wants its copies marked uses `navigator.clipboard.writeText`. The bridge gives a page
 nothing it did not have: it could already replace the clipboard while on screen.
+
+## Media
+
+A page that plays music should keep playing with the screen off, and show what it plays
+where Android shows a music app's: a notification with its buttons, the lock screen, and a
+headset's buttons. Chrome does this from the page's Media Session (`navigator.mediaSession`).
+The WebView keeps a Media Session too, but shows it nowhere, and an app in the background
+is frozen soon after, page and all. So the app relays the page's session to Android's:
+
+- `assets/media-session.js` is injected at document start, for the running endpoint's
+  origin only, in the top frame. It keeps what the page sets on `navigator.mediaSession`
+  (metadata, playback state, position, action handlers), still passing every call to the
+  WebView's own session, and sends a `WebMessageListener` named `__irohMediaSession` the
+  title, artist, album, whether it plays, the position and the buttons the page handles,
+  whenever any of it changes. Without a playback state of the page's own, the media
+  element that last started playing says whether it plays and where. Leaving the page
+  sends "nothing plays". A page that never sets metadata sends nothing at all.
+- `MediaSessionBridge.parse` reads that only from the running proxy's origin, cuts the
+  text, and drops anything that is not a time or a known button. `sessionState` turns it
+  into Android's `PlaybackState`: play and pause always (a browser plays and pauses the
+  media itself when the page has no handler), the rest only when the page handles them,
+  seeking only with a duration.
+- `AndroidMediaPlayback` holds an Android `MediaSession` while the page plays. From
+  Android 13 on, the notification's buttons, the lock screen's and the headset's all come
+  from that session, and its callback sends each press back to the page as the action's web
+  name (`MediaSessionBridge.command`), which the script hands to the page's handler.
+- `PlaybackService` is a foreground service of type `mediaPlayback` that holds the
+  notification and nothing else. Being one is what keeps the app, and the page in its
+  WebView, running with the screen off. It starts when the page first plays, while the app
+  is on screen (Android refuses to start one from the background), and stops when the page
+  says nothing plays, a new page starts, the endpoint is switched, the app is closed or
+  swiped away, or after ten minutes paused. Media session notifications need no
+  notification permission.
+- While something plays, the page's renderer keeps the app's priority when it is off
+  screen (`setRendererPriorityPolicy`), and back on the first page sends the app to the
+  background instead of closing it, as a music app does.
+
+**Taps.** A browser lets a page start media only after a tap, and a press on the
+notification is not a tap in the page. Chromium lets an element that a tap once started
+play again, which covers pausing and resuming the same element; a page that moves on to
+the next track by itself may need more. Each endpoint has a switch, "Media plays without a
+tap", off by default, that sets `mediaPlaybackRequiresUserGesture` to false for it. The
+worst an endpoint can do with it is start playing on its own, which may stop another app's
+music.
+
+**Limits.** What plays is the page, in the activity's WebView: when the app is closed or
+swiped away, it stops, and so does the session, and the notification cannot resume it. A
+page that starts playing on its own while the app is hidden gets no notification.
+Artwork is not relayed.
 
 ## Android specifics
 

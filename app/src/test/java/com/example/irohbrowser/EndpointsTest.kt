@@ -222,4 +222,29 @@ class EndpointsTest {
         assertEquals("1aaca28ae50b8d96", Endpoint("t").displayName("1aaca28ae50b8d96"))
         assertEquals("t", Endpoint("t").displayName(null))
     }
+
+    @Test
+    fun `autoplay is off until turned on, for that endpoint only`() {
+        val endpoints = Endpoints().add(endpoint(1)).add(endpoint(2))
+        assertFalse(endpoints.all.any { it.autoplay })
+        val on = endpoints.setAutoplay(1, true)
+        assertEquals(listOf(false, true), on.all.map { it.autoplay })
+        assertEquals(endpoints.all, on.setAutoplay(1, false).all)
+        assertEquals(on, on.setAutoplay(5, false))
+    }
+
+    @Test
+    fun `autoplay round-trips through json, and is only saved when on`() {
+        val on = Endpoints().add(endpoint(1)).add(endpoint(2)).setAutoplay(0, true)
+        assertEquals(on, Endpoints.fromJson(on.toJson()))
+        val saved = org.json.JSONObject(on.toJson()).getJSONArray("endpoints")
+        assertTrue(saved.getJSONObject(0).getBoolean("autoplay"))
+        assertFalse(saved.getJSONObject(1).has("autoplay"))
+    }
+
+    @Test
+    fun `endpoints saved before autoplay existed read as off`() {
+        val old = """{"endpoints": [{"ticket": "endpointabc", "name": "rpi5"}], "selected": 0}"""
+        assertEquals(listOf(Endpoint("endpointabc", "rpi5", autoplay = false)), Endpoints.fromJson(old).all)
+    }
 }

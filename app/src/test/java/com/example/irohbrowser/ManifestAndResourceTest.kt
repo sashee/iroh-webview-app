@@ -40,6 +40,10 @@ class ManifestAndResourceTest {
         // USE_BIOMETRIC shows the system fingerprint prompt that unlocks a
         // passkey. It grants no access to biometric data.
         //
+        // FOREGROUND_SERVICE and FOREGROUND_SERVICE_MEDIA_PLAYBACK keep a page
+        // playing while the app is in the background (PlaybackService). There
+        // is no POST_NOTIFICATIONS: a media session's notification needs none.
+        //
         // AGP synthesises DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION for every
         // targetSdk 33+ app; it is not ours to remove and grants nothing.
         val requested = packageInfo().requestedPermissions?.toList().orEmpty()
@@ -48,6 +52,8 @@ class ManifestAndResourceTest {
         assertEquals(
             listOf(
                 "android.permission.ACCESS_NETWORK_STATE",
+                "android.permission.FOREGROUND_SERVICE",
+                "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
                 "android.permission.INTERNET",
                 "android.permission.USE_BIOMETRIC",
             ),
@@ -119,6 +125,19 @@ class ManifestAndResourceTest {
 
         val exported = activities.filter { it.exported }.map { it.name }
         assertEquals(listOf("com.example.irohbrowser.MainActivity"), exported)
+    }
+
+    @Test
+    fun `the playback service is the only service, not exported, and of the media playback type`() {
+        // Another app could otherwise start it, and with it a notification
+        // and a foreground service in this app's name.
+        val services = context.packageManager
+            .getPackageInfo(context.packageName, PackageManager.GET_SERVICES)
+            .services.orEmpty()
+            .filter { it.packageName == context.packageName }
+        assertEquals(listOf("com.example.irohbrowser.PlaybackService"), services.map { it.name })
+        assertFalse(services.single().exported)
+        assertTrue(sourceManifest().contains("""android:foregroundServiceType="mediaPlayback""""))
     }
 
     @Test

@@ -8,8 +8,8 @@ import androidx.webkit.WebViewFeature
 /*
  * The ways page JavaScript reaches into the app: an injected script and the
  * WebMessageListener it posts to, offered to one origin at a time. There are
- * two, passkeys (PasskeyBridge) and the clipboard (ClipboardBridge). Both carry
- * data, not callable methods.
+ * three: passkeys (PasskeyBridge), the clipboard (ClipboardBridge) and the media
+ * session (MediaSessionBridge). All carry data, not callable methods.
  */
 
 /** A message from a page: its text, the origin the WebView reports for it, and a way to answer. */

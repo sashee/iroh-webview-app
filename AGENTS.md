@@ -66,10 +66,13 @@ default, which silently disables pinch-to-zoom; a download listener and an
 `onShowFileChooser` are absent by default, which makes downloads and file inputs do nothing
 at all. All three fail silently, so nothing points at them.
 
-**There are two doors from page JavaScript into the app: the passkey bridge and the
-clipboard bridge.** Keep both narrow. The clipboard one only takes text to copy, only from
-the running proxy's origin, and only while the page is on screen and focused
-(`ClipboardBridge.answer`). For the passkey one:
+**There are three doors from page JavaScript into the app: the passkey bridge, the
+clipboard bridge and the media session bridge.** Keep all three narrow. The clipboard one
+only takes text to copy, only from the running proxy's origin, and only while the page is
+on screen and focused (`ClipboardBridge.answer`). The media session one only takes what a
+page says it plays, from the running proxy's origin, and sends back nothing but a button's
+web name and a time (`MediaSessionBridge`); it is the only one that works with the app in
+the background, on purpose. For the passkey one:
 
 - The origin a passkey signs for comes from the running proxy (`PasskeySite`), never from a
   message. Do not add an origin, RP ID or "trusted" field to the bridge protocol.
@@ -84,7 +87,8 @@ the running proxy's origin, and only while the page is on screen and focused
 installed per origin and withdrawn on every switch, together with any prompt still showing.
 
 **`passkeys.js` and `PasskeyBridge.NAME` are joined by a string**, and so are
-`clipboard.js` and `ClipboardBridge.NAME`. If they drift, pages silently have no passkeys,
+`clipboard.js` and `ClipboardBridge.NAME`, and `media-session.js` and
+`MediaSessionBridge.NAME`. If they drift, pages silently have no passkeys,
 or copy unmarked. `WebViewConfigTest` checks that they agree.
 
 **Copies are marked sensitive only through `navigator.clipboard`.** The WebView's own
@@ -93,6 +97,15 @@ clipboard writes carry no `EXTRA_IS_SENSITIVE`, so `clipboard.js` sends `writeTe
 selection and `execCommand("copy")` go through Chromium and stay unmarked. Re-marking a
 clip after the WebView wrote it is not a fix: keyboards can save the first write to their
 clipboard history before the second arrives.
+
+**Never stop `PlaybackService` with `stopService`.** A service started with
+`startForegroundService` that is stopped before it has called `startForeground` crashes
+the app, and a page that plays and reloads at once does exactly that. `AndroidMediaPlayback.end`
+sends it `ACTION_STOP` instead, which arrives after the start.
+
+**A page that sets no Media Session metadata must see no difference.** pw-mgr is one. The
+script sends nothing until metadata is set, and nothing is shown until the page plays;
+`media-session.test.mjs` and `MediaWiringTest` hold both.
 
 **Adding a fingerprint invalidates every passkey key.** Android does this to keys bound to
 biometrics. `signIn` then forgets the passkey and says why. That is expected behaviour,
@@ -205,12 +218,19 @@ Passkeys (`app/src/main/java/com/example/irohbrowser/` and `app/src/main/assets/
 
 Page bridges (`app/src/main/java/com/example/irohbrowser/` and `app/src/main/assets/`):
 
-- `PageBridges.kt` — `BridgeInstaller`, the seam both bridges are offered through, and
+- `PageBridges.kt` — `BridgeInstaller`, the seam the bridges are offered through, and
   its `WebViewCompat` implementation.
 - `assets/clipboard.js` — injected into pages. Hands `navigator.clipboard` writes to the
   app.
 - `Clipboard.kt` — `ClipboardBridge.answer`, which decides whether a copy goes ahead
   (pure apart from the copy), and `copySensitive`, which writes the clip.
+- `assets/media-session.js` — injected into pages. Relays the page's
+  `navigator.mediaSession` to the app, and the system's buttons back to its handlers.
+- `Media.kt` — `MediaSessionBridge`: parsing what a page plays, the button commands, and
+  the `PlaybackState` Android is shown. Pure.
+- `Playback.kt` — the platform side: `MediaPlayback` (the seam), `AndroidMediaPlayback`
+  (Android's `MediaSession`) and `PlaybackService` (the `mediaPlayback` foreground service
+  holding the notification). Thin, and only exercised on a device.
 
 ## Debugging on a device
 

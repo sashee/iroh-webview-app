@@ -68,6 +68,18 @@ The menu's **Endpoints and passkeys** screen lists every saved endpoint:
   again.
 - **Deleting a passkey:** this removes the phone's key. The server's record of it stays,
   but can never be used.
+- **Media plays without a tap:** off by default. On, the endpoint's pages may start media
+  on their own, which the notification's buttons need to start the next track while the
+  app is hidden. Turn it on only for endpoints you trust.
+
+## Playing in the background
+
+A page that sets `navigator.mediaSession.metadata` and plays is shown as Android shows a
+music app: a notification with the page's title and buttons, the same controls on the lock
+screen, and the headset's buttons. The app keeps running with the screen off while it
+plays. Back on the first page sends the app to the background instead of closing it.
+Closing the app, or swiping it away, stops the page and the music. Pages that set no
+metadata are unaffected. See DESIGN.md, Media.
 
 ## Debugging
 
@@ -89,10 +101,10 @@ explanation, so logcat is the only place the reason exists.
   to do to use them.
 - **No HTTP parsing.** The proxy copies bytes. Chunked encoding, `Range`, `Set-Cookie`,
   redirects and keep-alive work because nothing here is a participant in them.
-- **No JavaScript interface.** The page comes from an arbitrary peer. Its two channels
-  into the app are for passkeys and for copying text marked sensitive. Both are restricted
-  to the endpoint's own origin and carry data, not methods. `addJavascriptInterface` is
-  never used, as `WebViewConfigTest` asserts.
+- **No JavaScript interface.** The page comes from an arbitrary peer. Its three channels
+  into the app are for passkeys, for copying text marked sensitive, and for showing what
+  it plays. All are restricted to the endpoint's own origin and carry data, not methods.
+  `addJavascriptInterface` is never used, as `WebViewConfigTest` asserts.
 
 `minSdk` is 34 — this targets one Pixel 6a, not the world.
 
@@ -206,3 +218,22 @@ These need a page behind the endpoint with a button that calls
 22. Have the page copy on a timer, then open the menu's **Endpoints and passkeys**
     before it fires, or send the app to the background. The clipboard keeps what it had.
 23. Long-press text on the page and copy it. It is copied, unmarked, as in any browser.
+
+### Playing in the background
+
+These need a page behind the endpoint that plays audio and sets the Media Session's
+metadata and handlers, for example media-store (DESIGN.md, Media).
+
+24. Play a track. A notification shows its title, with play/pause, previous and next as
+    the page offers them, and a seek bar. Pressing them acts on the page.
+25. Turn the screen off for a few minutes: the music keeps playing, and the lock screen
+    shows the same controls. Pause and resume from there.
+26. With "Media plays without a tap" off, pause and resume from the notification. Then let
+    a track end, or press next while the app is hidden: if the next track does not start,
+    turn the switch on for the endpoint and try again.
+27. Press back on the page's first screen while it plays: the app goes to the background
+    and keeps playing. With nothing playing, back closes the app as before.
+28. Swipe the app away from the recents screen: the music stops and the notification goes.
+29. Pause and wait ten minutes: the notification goes.
+30. Open an endpoint whose pages set no Media Session metadata, such as pw-mgr: no
+    notification, and everything works as before.

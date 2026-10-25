@@ -262,6 +262,33 @@ class SettingsScreenTest {
     }
 
     @Test
+    fun `the autoplay switch is off by default, and turning it on applies to the open page at once`() {
+        harness.seed("ticket-alpha", "ticket-beta", selected = 0)
+        val activity = launch()
+        activity.showSettings()
+        val switch = activity.content().findViewWithTag<android.widget.CompoundButton>("autoplay:0")
+        assertFalse(switch.isChecked)
+        assertTrue(activity.webView().settings.mediaPlaybackRequiresUserGesture)
+
+        activity.tap("autoplay:0")
+
+        assertEquals(listOf(true, false), activity.endpoints.all.map { it.autoplay })
+        assertEquals(listOf(true, false), harness.store.load().all.map { it.autoplay })
+        assertFalse(activity.webView().settings.mediaPlaybackRequiresUserGesture)
+        assertTrue("still on the list, redrawn", activity.content().findViewWithTag<android.widget.CompoundButton>("autoplay:0").isChecked)
+    }
+
+    @Test
+    fun `turning autoplay on for another endpoint leaves the open page as it is`() {
+        harness.seed("ticket-alpha", "ticket-beta", selected = 0)
+        val activity = launch()
+        activity.showSettings()
+        activity.tap("autoplay:1")
+        assertTrue(activity.webView().settings.mediaPlaybackRequiresUserGesture)
+        assertEquals(listOf(false, true), activity.endpoints.all.map { it.autoplay })
+    }
+
+    @Test
     fun `opening another endpoint switches to it`() {
         harness.seed("ticket-alpha", "ticket-beta", selected = 1)
         val activity = launch()

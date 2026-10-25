@@ -119,6 +119,20 @@ class WebViewConfigTest {
     }
 
     @Test
+    fun `the media session script looks for the bridge the app installs`() {
+        // Drift here leaves the notification empty while the page plays.
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val script = context.assets.open(MediaSessionBridge.SCRIPT_ASSET).bufferedReader().use { it.readText() }
+        assertTrue(script.contains("globalThis.${MediaSessionBridge.NAME}"))
+    }
+
+    @Test
+    fun `media waits for a tap unless the endpoint allows otherwise`() {
+        // The browser's default, which the settings switch lifts per endpoint.
+        assertTrue(settings().mediaPlaybackRequiresUserGesture)
+    }
+
+    @Test
     fun `no javascript interface is installed`() {
         // The bridges into the app, for passkeys and the clipboard, are
         // WebMessageListeners restricted to the endpoint's origin (see
@@ -129,7 +143,7 @@ class WebViewConfigTest {
         // A call that never happens leaves nothing for reflection to find, so
         // this asserts on the compiled classes instead: the constant pool has
         // no reference to the method at all.
-        listOf(MainActivity::class.java, WebViewBridgeInstaller::class.java).forEach { type ->
+        listOf(MainActivity::class.java, WebViewBridgeInstaller::class.java, AndroidMediaPlayback::class.java).forEach { type ->
             val bytecode = type.classLoader!!
                 .getResourceAsStream(type.name.replace('.', '/') + ".class")!!
                 .use { it.readBytes() }
