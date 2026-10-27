@@ -204,6 +204,9 @@ to whatever app is listening there.
 - the url supplies a name when the header does not
 - a path in the filename is stripped — the header is written by the peer
 - there is always a name
+- a name a page gives the download bridge loses any folder and control characters; one
+  that is no name becomes "download"; a long one is cut to 240 bytes of UTF-8, keeping its
+  extension and whole characters
 
 ### WebView configuration — `WebViewConfigTest`
 
@@ -220,8 +223,8 @@ later.
 - no JavaScript interface: `addJavascriptInterface` is checked against the compiled
   classes of the activity, the bridge installer and the media playback, since a call that
   never happens leaves nothing for reflection to find
-- the passkey, clipboard and media session scripts each look for the bridge object the app
-  installs, by the same name
+- the passkey, clipboard, media session and download scripts each look for the bridge
+  object the app installs, by the same name
 - media waits for a tap by default
 
 ### Manifest and resources — `ManifestAndResourceTest`
@@ -399,6 +402,27 @@ code under test.
   closes it otherwise, as before
 - media needs a tap unless the endpoint allows otherwise, and that follows a switch
 
+### The download bridge — `PageDownloadsTest`
+
+- a page's file is written piece by piece, each piece answered with the bytes written so
+  far, and saved; the page is told the name it was saved as, a taken one numbered; an
+  empty file is saved; the name is cleaned before anything is made
+- another origin is not heard, for text or for pieces; messages that make no sense, and
+  pieces with no file being saved, are ignored
+- a second file while one is saved is refused, and the first goes on
+- each way a file ends unsaved discards what was written: more bytes than it has, a piece
+  larger than the bridge takes, a piece before the last was written (one in flight at
+  most, so a page cannot fill the app's memory), an end before the whole file came, the
+  page giving up, the page going away (also while the file is still being made), a file
+  that cannot be made, a write that fails
+
+### Where the download bridge is offered — `DownloadWiringTest`
+
+- to the running endpoint's exact origin, moved on a switch
+- a page's file is saved in Downloads, through the main thread's queue
+- a switch, a new page in the main frame and closing the app each discard a file half
+  saved
+
 ### The settings screen's model — `SettingsTest`
 
 Plain JUnit: it is a pure function of the saved state.
@@ -499,6 +523,22 @@ and a recording `navigator.mediaSession`.
   offered; garbage is ignored
 - without the bridge, or in a frame, the page is left as it was
 
+## The download script — `app/src/test/js/downloads.test.mjs`
+
+In Node, against fake links, fake `blob:` URLs and an app that answers as
+`PageDownloads` does.
+
+- a link's `click()` sends the file in 1 MiB pieces, each once the last was answered,
+  then the end, and the browser downloads nothing; a link in the page, clicked, is saved
+  the same way; an empty file is saved
+- a URL revoked as soon as `click()` returns still saves; a `blob:` URL the page made
+  elsewhere is fetched; one that is gone sends nothing
+- a click the page cancels, a link without `download` and a link to anything but a blob
+  are left to the browser
+- a refused file sends nothing more; files go one at a time, in the order clicked; a file
+  that cannot be read on is abandoned, and the app told
+- without the bridge, the page is left as it was
+
 ## Gaps, stated rather than hidden
 
 - **`*.localhost` resolution and cookie keying** are Chromium behaviour. Robolectric's
@@ -519,6 +559,9 @@ and a recording `navigator.mediaSession`.
 - **The platform half of playback** has no automated tests: Android's `MediaSession`, the
   notification, the foreground service, and the renderer priority. `Playback.kt` is kept
   thin for that reason; README.md's playback checks cover it.
+- **The platform half of downloads** has no automated tests: the Downloads collection
+  (`MediaStoreDownloads.kt`, kept thin), and the WebView delivering an `ArrayBuffer`.
+  README.md's download checks cover it.
 - **Whether a clip marked sensitive is hidden** is the system's and the keyboard's
   behaviour. The tests check that the flag is set, and README.md's clipboard checks that
   it does what it should.

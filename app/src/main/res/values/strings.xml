@@ -10,6 +10,9 @@
     <string name="menu_settings">Endpoints and passkeys</string>
     <string name="download_started">Downloading %1$s</string>
     <string name="download_failed">Could not start the download.</string>
+    <string name="download_saving">Saving %1$s</string>
+    <string name="download_saved">Saved %1$s to Downloads</string>
+    <string name="download_not_saved">Could not save %1$s</string>
     <string name="passkey_register_title">Create a passkey</string>
     <string name="passkey_sign_in_title">Sign in with a passkey</string>
     <string name="passkey_account_on_endpoint">%1$s on %2$s</string>

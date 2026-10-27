@@ -2,6 +2,7 @@ package com.example.irohbrowser
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -89,5 +90,36 @@ class DownloadsTest {
         assertEquals("download", Downloads.fileName("attachment", null))
         assertEquals("download", Downloads.fileName("attachment; filename=\"\"", null))
         assertEquals("download", Downloads.fileName(null, "http://$label.localhost:$port/"))
+    }
+
+    @Test
+    fun `a name a page gives is saved without a folder or control characters`() {
+        // The download bridge's names come straight from the page.
+        assertEquals("evil.sh", Downloads.cleanName("../../evil.sh"))
+        assertEquals("evil.sh", Downloads.cleanName("..\\..\\evil.sh"))
+        assertEquals("ab.mp3", Downloads.cleanName(" a\nb\u0000.mp3 "))
+        assertEquals("01 Säntis – Ünïcødé.flac", Downloads.cleanName("01 Säntis – Ünïcødé.flac"))
+    }
+
+    @Test
+    fun `a name that is no name becomes download`() {
+        listOf(null, "", "   ", ".", "..", "a/", "\u0007").forEach {
+            assertEquals("download", Downloads.cleanName(it))
+        }
+    }
+
+    @Test
+    fun `a long name is cut, keeping its extension and whole characters`() {
+        val cut = Downloads.cleanName("ü".repeat(300) + ".mp3")
+        assertTrue(cut.endsWith("ü.mp3"))
+        assertTrue(cut.toByteArray(Charsets.UTF_8).size <= 240)
+
+        // Four bytes each, as two chars: never split.
+        val emoji = Downloads.cleanName("😀".repeat(100) + ".txt")
+        assertTrue(emoji.removeSuffix(".txt").codePoints().allMatch { it == "😀".codePointAt(0) })
+        assertTrue(emoji.toByteArray(Charsets.UTF_8).size <= 240)
+
+        // No extension to keep: an ending too long to be one is cut with the rest.
+        assertEquals(240, Downloads.cleanName("a".repeat(150) + "." + "b".repeat(150)).length)
     }
 }

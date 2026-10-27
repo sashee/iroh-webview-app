@@ -127,6 +127,15 @@ class WebViewConfigTest {
     }
 
     @Test
+    fun `the download script looks for the bridge the app installs`() {
+        // Drift here sends a page's files to the system downloader, which
+        // cannot fetch them: a tap on Download says it could not start.
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val script = context.assets.open(DownloadBridge.SCRIPT_ASSET).bufferedReader().use { it.readText() }
+        assertTrue(script.contains("globalThis.${DownloadBridge.NAME}"))
+    }
+
+    @Test
     fun `media waits for a tap unless the endpoint allows otherwise`() {
         // The browser's default, which the settings switch lifts per endpoint.
         assertTrue(settings().mediaPlaybackRequiresUserGesture)

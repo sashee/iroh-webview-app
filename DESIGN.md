@@ -154,13 +154,16 @@ cookie and is discarded when the process does, whatever the app does.
   after a switch, and a restored page on the wrong port is replaced by the front page.
   WebSockets don't pass through either hook, and the proxy override lets `*.localhost`
   through on every port. But only a page already loaded from the endpoint can open one.
-- **Three bridges from page JavaScript into the app: passkeys, the clipboard and the media
-  session.** Each is a `WebMessageListener` that the WebView restricts to the running
-  endpoint's exact origin, and each carries data, not callable methods. The passkey bridge
-  accepts two operations, create and get, and each needs a fingerprint before it signs
-  anything (see [Passkeys](#passkeys)). The clipboard bridge accepts text to copy, and
+- **Four bridges from page JavaScript into the app: passkeys, the clipboard, the media
+  session and downloads.** Each is a `WebMessageListener` that the WebView restricts to the
+  running endpoint's exact origin, and each carries data, not callable methods. The passkey
+  bridge accepts two operations, create and get, and each needs a fingerprint before it
+  signs anything (see [Passkeys](#passkeys)). The clipboard bridge accepts text to copy, and
   nothing else (see [Clipboard](#clipboard)). The media session bridge accepts what a page
-  says it plays, and sends back the name of a button (see [Media](#media)).
+  says it plays, and sends back the name of a button (see [Media](#media)). The download
+  bridge accepts a name and bytes to save in Downloads, and sends back counts (see
+  [Downloads and uploads](#downloads-and-uploads)). A binary message reaches only the
+  download bridge: the others would throw reading one as text.
   `addJavascriptInterface` is still absent: `WebViewConfigTest` asserts that the compiled
   classes do not reference it at all.
 - **External links leave the WebView, when the user taps them.** `http`/`https` outside
@@ -186,7 +189,34 @@ Chromium special case. The proxy never reads the `Host` header, so the rewrite r
 same place. And the cookies are copied onto the request by hand, since the download is made
 by a process with no access to this app's jar. `Downloads.systemUrl` refuses any URL that is
 not our own origin: a download is triggered by the page, and a page from an arbitrary peer
-should not get to aim the system downloader.
+should not get to aim the system downloader. Anything else -- another site, a `data:` URL,
+a `blob:` URL the bridge below did not catch -- says the download could not be started.
+
+A file the page itself holds -- one it decrypted, say -- is a `blob:` URL, which lives only
+in the page: the system downloader cannot fetch it. So the download bridge saves those:
+
+- `assets/downloads.js` is injected at document start, for the running endpoint's origin
+  only. It takes the click on a link with a `download` attribute to a `blob:` URL -- a link
+  in the page, clicked or `click()`ed, or one outside the page `click()`ed, which is how
+  pages save -- unless the page cancelled it, and sends the Blob to a
+  `WebMessageListener` named `__irohDownloads`: its name and size, then 1 MiB binary
+  pieces, each once the app has written the one before, then the end. It keeps the Blob
+  behind each of the page's `blob:` URLs until the page revokes it, so a URL revoked as
+  soon as `click()` returns still saves, and the bytes are read from the page's own Blob.
+- `PageDownloads` takes one file at a time, from the running proxy's origin only, and
+  writes it on a background thread, so the page's next piece waits on the disk rather than
+  the app's memory: a piece before the last was written ends the file. Every way a file
+  ends unsaved -- too many bytes, too few, the page going away, an endpoint switch, a
+  failed write -- deletes what was written.
+- `MediaStoreDownloads` writes into the Downloads collection, as the system downloader
+  does: no permission, pending until finished, so nothing sees half a file. Its type comes
+  from its extension, as Downloads adds a second extension to a file whose type disagrees.
+  A toast says when it starts and how it ended.
+
+A click dispatched on a link outside the page (`dispatchEvent`) still reaches the WebView's
+listener. Binary messages need WebView 116; without it the bridge isn't offered, and such
+a download says it could not be started. The bridge gives a page nothing it did not have:
+its server could already send any file to Downloads through the system downloader.
 
 An upload uses `WebChromeClient.onShowFileChooser` into `OpenMultipleDocuments`. The only
 subtlety is that a pending `ValueCallback` must always be answered — with null on

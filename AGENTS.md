@@ -66,13 +66,17 @@ default, which silently disables pinch-to-zoom; a download listener and an
 `onShowFileChooser` are absent by default, which makes downloads and file inputs do nothing
 at all. All three fail silently, so nothing points at them.
 
-**There are three doors from page JavaScript into the app: the passkey bridge, the
-clipboard bridge and the media session bridge.** Keep all three narrow. The clipboard one
-only takes text to copy, only from the running proxy's origin, and only while the page is
-on screen and focused (`ClipboardBridge.answer`). The media session one only takes what a
-page says it plays, from the running proxy's origin, and sends back nothing but a button's
-web name and a time (`MediaSessionBridge`); it is the only one that works with the app in
-the background, on purpose. For the passkey one:
+**There are four doors from page JavaScript into the app: the passkey bridge, the
+clipboard bridge, the media session bridge and the download bridge.** Keep all four narrow.
+The clipboard one only takes text to copy, only from the running proxy's origin, and only
+while the page is on screen and focused (`ClipboardBridge.answer`). The media session one
+only takes what a page says it plays, from the running proxy's origin, and sends back
+nothing but a button's web name and a time (`MediaSessionBridge`); it works with the app in
+the background, on purpose. The download one only takes a name and bytes, from the running
+proxy's origin, one file and one piece at a time (`PageDownloads`); a file being saved
+carries on in the background. It is the only one that takes binary messages:
+`WebViewBridgeInstaller` reads a message's type before its text, as `data` throws on a
+binary message and any page can post one. For the passkey one:
 
 - The origin a passkey signs for comes from the running proxy (`PasskeySite`), never from a
   message. Do not add an origin, RP ID or "trusted" field to the bridge protocol.
@@ -87,9 +91,10 @@ the background, on purpose. For the passkey one:
 installed per origin and withdrawn on every switch, together with any prompt still showing.
 
 **`passkeys.js` and `PasskeyBridge.NAME` are joined by a string**, and so are
-`clipboard.js` and `ClipboardBridge.NAME`, and `media-session.js` and
-`MediaSessionBridge.NAME`. If they drift, pages silently have no passkeys,
-or copy unmarked. `WebViewConfigTest` checks that they agree.
+`clipboard.js` and `ClipboardBridge.NAME`, `media-session.js` and
+`MediaSessionBridge.NAME`, and `downloads.js` and `DownloadBridge.NAME`. If they drift,
+pages silently have no passkeys, or copy unmarked. `WebViewConfigTest` checks that they
+agree.
 
 **Copies are marked sensitive only through `navigator.clipboard`.** The WebView's own
 clipboard writes carry no `EXTRA_IS_SENSITIVE`, so `clipboard.js` sends `writeText`, and
@@ -190,7 +195,7 @@ Rust (`rust/src/`) — each module is small and its tests are beside it:
   and the label is also the RP ID of the endpoint's passkeys. `identity` combines them
   for the app, which needs the origin of endpoints that are not running.
 - `Downloads.kt` (Kotlin) — the `127.0.0.1` rewrite for `DownloadManager`, which cannot
-  resolve `*.localhost`.
+  resolve `*.localhost`, and the cleaning of the names files are saved under.
 - `gateway.rs` — the canned 502.
 - `resolver.rs` — the endpoint's DNS resolver: public DoH servers by address, nothing else.
 - `runtime.rs` — start/stop for a non-async caller; owns the tokio runtime.
@@ -243,6 +248,12 @@ Page bridges (`app/src/main/java/com/example/irohbrowser/` and `app/src/main/ass
 - `Playback.kt` — the platform side: `MediaPlayback` (the seam), `AndroidMediaPlayback`
   (Android's `MediaSession`) and `PlaybackService` (the `mediaPlayback` foreground service
   holding the notification). Thin, and only exercised on a device.
+- `assets/downloads.js` — injected into pages. Sends the files a page saves through a link
+  to a `blob:` URL to the app, in pieces.
+- `PageDownloads.kt` — `DownloadBridge` (the protocol, pure), and `PageDownloads`: the one
+  file being saved, written on `AppContainer.io`, discarded on every way it can end unsaved.
+- `MediaStoreDownloads.kt` — the platform side: the Downloads collection. Thin, and only
+  exercised on a device.
 
 ## Debugging on a device
 
@@ -298,4 +309,6 @@ mutation, keep state minimal and at the edges. The deliberate exceptions are:
 - the `Endpoints` field on `MainActivity`: an Android activity is a mutable object by
   construction;
 - the ceremony in progress in `PasskeyBridge`: callbacks from the prompt are the only way
-  it ends, and "one at a time" needs something to remember that one.
+  it ends, and "one at a time" needs something to remember that one;
+- the file being saved in `PageDownloads`, for the same reason: its pieces arrive one
+  message at a time.

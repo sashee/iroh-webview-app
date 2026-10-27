@@ -6,8 +6,11 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import androidx.test.core.app.ApplicationProvider
 import com.example.irohbrowser.AppContainer
+import com.example.irohbrowser.BridgeBytesReceiver
 import com.example.irohbrowser.BridgeInstaller
 import com.example.irohbrowser.BridgeReceiver
+import com.example.irohbrowser.DownloadFile
+import com.example.irohbrowser.DownloadTarget
 import com.example.irohbrowser.EndpointStore
 import com.example.irohbrowser.EndpointIdentity
 import com.example.irohbrowser.Endpoints
@@ -291,20 +294,28 @@ class FakeBridgeInstaller : BridgeInstaller {
         private set
 
     private var receiver: BridgeReceiver? = null
+    private var bytesReceiver: BridgeBytesReceiver? = null
 
     /** Runs as each install begins, so a test can see what had happened by then. */
     var onInstall: () -> Unit = {}
 
-    override fun install(webView: WebView, origin: String, receive: BridgeReceiver): (() -> Unit)? {
+    override fun install(
+        webView: WebView,
+        origin: String,
+        receiveBytes: BridgeBytesReceiver?,
+        receive: BridgeReceiver,
+    ): (() -> Unit)? {
         onInstall()
         if (!supported) return null
         events += "install:$origin"
         installedOrigin = origin
         receiver = receive
+        bytesReceiver = receiveBytes
         return {
             events += "uninstall:$origin"
             installedOrigin = null
             receiver = null
+            bytesReceiver = null
         }
     }
 
@@ -313,6 +324,59 @@ class FakeBridgeInstaller : BridgeInstaller {
         val replies = mutableListOf<String>()
         (receiver ?: error("nothing installed"))(message, from) { replies += it }
         return replies
+    }
+
+    /**
+     * Post [bytes] as a page of [from] would post an `ArrayBuffer`, and
+     * return what came back at once. A bridge that takes no bytes never sees
+     * them, as with the real WebView.
+     */
+    fun postBytes(bytes: ByteArray, from: String = installedOrigin ?: error("nothing installed")): List<String> {
+        val replies = mutableListOf<String>()
+        bytesReceiver?.invoke(bytes, from) { replies += it }
+        return replies
+    }
+}
+
+/** A [DownloadTarget] keeping the files in memory: those being written, and those saved, by name. */
+class FakeDownloadTarget : DownloadTarget {
+    /** The files saved, by the name they were saved as. */
+    val saved = linkedMapOf<String, ByteArray>()
+
+    /** Files created and not yet saved or discarded, by the name asked for. */
+    val open = mutableMapOf<String, java.io.ByteArrayOutputStream>()
+
+    /** Files discarded, by the name asked for. */
+    val discarded = mutableListOf<String>()
+
+    /** Act like storage that will not make a file. */
+    var refuseToCreate = false
+
+    /** Make every write fail, as a full disk does. */
+    var failWrites = false
+
+    override fun create(name: String): DownloadFile? {
+        if (refuseToCreate) return null
+        val bytes = java.io.ByteArrayOutputStream()
+        open[name] = bytes
+        return object : DownloadFile {
+            override fun write(bytes: ByteArray) {
+                if (failWrites) throw java.io.IOException("no space left")
+                open.getValue(name).write(bytes)
+            }
+
+            override fun finish(): String {
+                // As Downloads does: a taken name gets a number.
+                val free = if (name !in saved) name else generateSequence(1) { it + 1 }.map { "$name ($it)" }.first { it !in saved }
+                saved[free] = open.remove(name)!!.toByteArray()
+                return free
+            }
+
+            override fun discard() {
+                open.remove(name)
+                discarded += name
+            }
+        }
     }
 }
 
@@ -422,10 +486,28 @@ class TestHarness(
 
     val media = FakeMediaPlayback()
 
+    val downloadBridge = FakeBridgeInstaller()
+
+    val downloads = FakeDownloadTarget()
+
     fun install() {
         store.save(Endpoints())
         AppContainer.install(
-            AppContainer(store, proxy, passkeys.platform, clipboardBridge, serviceWorkers, pageScripts, mediaBridge, media) { siteData },
+            AppContainer(
+                store = store,
+                proxy = proxy,
+                passkeys = passkeys.platform,
+                clipboardBridge = clipboardBridge,
+                serviceWorkers = serviceWorkers,
+                pageScripts = pageScripts,
+                mediaBridge = mediaBridge,
+                media = media,
+                downloadBridge = downloadBridge,
+                downloads = downloads,
+                // At once, on the test's thread: what is written is there when the post returns.
+                io = { it.run() },
+                siteData = { siteData },
+            ),
         )
     }
 

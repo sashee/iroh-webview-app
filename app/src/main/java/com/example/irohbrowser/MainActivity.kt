@@ -79,6 +79,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var fileChooser: ActivityResultLauncher<Array<String>>
 
     private lateinit var passkeys: PasskeyBridge
+    private lateinit var downloads: PageDownloads
     private lateinit var settings: ScrollView
     private lateinit var settingsScreen: SettingsScreen
 
@@ -113,6 +114,8 @@ class MainActivity : AppCompatActivity() {
                 clock = container.passkeys.clock,
             ),
         )
+
+        downloads = PageDownloads(container.downloads, container.io, mainExecutor, ::announce)
 
         fileChooser = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
             pendingFileChooser?.onReceiveValue(uris.orEmpty().toTypedArray())
@@ -164,9 +167,9 @@ class MainActivity : AppCompatActivity() {
         }
         runCatching { rendererDefault = webView.rendererRequestedPriority to webView.rendererPriorityWaivedWhenNotVisible }
         // Deliberately absent: addJavascriptInterface. The ways from page
-        // JavaScript into the app are the passkey, clipboard and media session
-        // bridges (offerBridges), which the WebView restricts to the endpoint's
-        // origin and which carry data, not callable methods.
+        // JavaScript into the app are the passkey, clipboard, media session and
+        // download bridges (offerBridges), which the WebView restricts to the
+        // endpoint's origin and which carry data, not callable methods.
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
                 view: WebView,
@@ -179,9 +182,12 @@ class MainActivity : AppCompatActivity() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
                 refusal(request.url?.toString())
 
-            // A new page in the main frame: whatever the last one played went
-            // with it, even if it never said so.
-            override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) = endMedia()
+            // A new page in the main frame: whatever the last one played, or
+            // was saving, went with it, even if it never said so.
+            override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                endMedia()
+                downloads.cancel()
+            }
 
             override fun onPageFinished(view: WebView, url: String?) {
                 val running = binding ?: return
@@ -202,6 +208,8 @@ class MainActivity : AppCompatActivity() {
             assets.open(Confinement.SCRIPT_ASSET).bufferedReader().use { it.readText() },
         )
         // Without this a download link does nothing at all -- no error, no file.
+        // A page's own files (blob: URLs) don't come this way: the download
+        // bridge takes them (offerBridges).
         webView.setDownloadListener { url, _, contentDisposition, mimeType, _ ->
             startDownload(url, contentDisposition, mimeType)
         }
@@ -236,7 +244,10 @@ class MainActivity : AppCompatActivity() {
      */
     private fun startDownload(url: String?, contentDisposition: String?, mimeType: String?) {
         val current = binding ?: return
-        val target = Downloads.systemUrl(url, current.label, current.port) ?: return
+        // Not ours, or a blob: URL the download bridge didn't catch: say so,
+        // rather than nothing happening.
+        val target = Downloads.systemUrl(url, current.label, current.port)
+            ?: return Toast.makeText(this, R.string.download_failed, Toast.LENGTH_SHORT).show()
         val name = Downloads.fileName(contentDisposition, url)
 
         val request = DownloadManager.Request(Uri.parse(target)).apply {
@@ -255,6 +266,16 @@ class MainActivity : AppCompatActivity() {
             else getString(R.string.download_failed),
             Toast.LENGTH_SHORT,
         ).show()
+    }
+
+    /** What the user hears of a file a page saves through the download bridge. */
+    private fun announce(event: DownloadEvent) {
+        val text = when (event) {
+            is DownloadEvent.Started -> R.string.download_saving
+            is DownloadEvent.Saved -> R.string.download_saved
+            is DownloadEvent.Failed -> R.string.download_not_saved
+        }
+        Toast.makeText(this, getString(text, event.name), Toast.LENGTH_SHORT).show()
     }
 
     /**
@@ -422,7 +443,8 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Give this endpoint's pages, and only them, a way to reach its passkeys,
-     * to copy text marked sensitive, and to show what they play.
+     * to copy text marked sensitive, to show what they play, and to save the
+     * files they hold.
      *
      * The origin is fixed here, from the proxy that was just started: the
      * origin a ceremony signs for is never one the page supplied. The name is
@@ -451,12 +473,21 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             },
+            container.downloadBridge.install(
+                webView,
+                origin,
+                receiveBytes = { bytes, sourceOrigin, _ -> downloads.receive(bytes, sourceOrigin, running) },
+            ) { message, sourceOrigin, reply -> downloads.receive(message, sourceOrigin, running, reply) },
         )
     }
 
-    /** Withdraw the bridges, and any prompt the departing endpoint's page had raised, and what it played. */
+    /**
+     * Withdraw the bridges, and any prompt the departing endpoint's page had
+     * raised, what it played, and what it was saving.
+     */
     private fun withdrawBridges() {
         passkeys.cancel()
+        downloads.cancel()
         bridgeWithdrawals.forEach { it() }
         bridgeWithdrawals = emptyList()
         endMedia()

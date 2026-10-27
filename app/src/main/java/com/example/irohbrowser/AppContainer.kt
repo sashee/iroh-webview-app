@@ -2,6 +2,8 @@ package com.example.irohbrowser
 
 import android.content.Context
 import android.webkit.WebView
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 /**
  * The app's dependencies, in one place that a test can replace.
@@ -23,6 +25,12 @@ class AppContainer(
     val mediaBridge: BridgeInstaller,
     /** What shows the system what a page plays. Process-wide, like the service holding its notification. */
     val media: MediaPlayback,
+    /** The bridge `assets/downloads.js` sends the files a page saves through (see [DownloadBridge]). */
+    val downloadBridge: BridgeInstaller,
+    /** Where those files are saved. */
+    val downloads: DownloadTarget,
+    /** Where saving them runs: one thread, in order, off the main one. Tests run it at once. */
+    val io: Executor,
     /**
      * How to reach the browser's stored site data. A factory rather than a
      * value because the real one needs the activity's WebView, which does not
@@ -59,6 +67,9 @@ class AppContainer(
                 pageScripts = WebViewPageScripts,
                 mediaBridge = WebViewBridgeInstaller(MediaSessionBridge.NAME, MediaSessionBridge.SCRIPT_ASSET),
                 media = AndroidMediaPlayback(context),
+                downloadBridge = WebViewBridgeInstaller(DownloadBridge.NAME, DownloadBridge.SCRIPT_ASSET),
+                downloads = MediaStoreDownloads(context.contentResolver),
+                io = Executors.newSingleThreadExecutor(),
             )
     }
 }

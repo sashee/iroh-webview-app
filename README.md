@@ -238,14 +238,29 @@ metadata and handlers, for example media-store (DESIGN.md, Media).
 30. Open an endpoint whose pages set no Media Session metadata, such as pw-mgr: no
     notification, and everything works as before.
 
+### Downloads
+
+These need a page behind the endpoint that saves files it holds, through a link to a
+`blob:` URL, for example media-store's Download (DESIGN.md, Downloads and uploads).
+
+31. Download a small file. "Saving …" then "Saved … to Downloads" show, and the Files app
+    lists it in Downloads, its bytes as uploaded. Download it again: the second is
+    numbered, "name (1).ext".
+32. Download a large track (hundreds of MB). The page shows how much it has read; the app
+    stays responsive while the file is written, and the saved file plays.
+33. Start a large download and switch to another endpoint before it is saved: "Could not
+    save …" shows, and nothing half written appears in Downloads.
+34. A download link to the endpoint's own server (not a `blob:` URL) still goes to the
+    system downloader, with its notification, as before.
+
 ### Network blocked in the background
 
-31. Open the file picker from a page and wait 10 seconds before picking, then upload
+35. Open the file picker from a page and wait 10 seconds before picking, then upload
     something large. It goes through at full speed. `adb logcat -s irohbrowser:V` shows
     `network blocked by Android: closing the proxy's connections` and then `network back`.
-32. Start a large upload and switch to another app before it finishes: once the block
+36. Start a large upload and switch to another app before it finishes: once the block
     comes, about five seconds later, the upload fails with an error rather than hanging.
-33. Switch to another app for ten seconds, come back, and save something at once (in
+37. Switch to another app for ten seconds, come back, and save something at once (in
     media-store, Sort again). It saves. If a request does get stuck, `adb logcat -s
     irohbrowser:V` shows `an answer has been owed for …` with each path's QUIC stats, and
     within about half a minute `closing the connection for …, stuck:`, after which the
