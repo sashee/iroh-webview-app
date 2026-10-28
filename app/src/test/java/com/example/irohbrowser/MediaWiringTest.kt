@@ -1,11 +1,13 @@
 package com.example.irohbrowser
 
+import android.content.Intent
 import android.webkit.WebView
 import com.example.irohbrowser.testing.TestHarness
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -25,7 +27,7 @@ import org.robolectric.android.controller.ActivityController
 class MediaWiringTest {
 
     private lateinit var harness: TestHarness
-    private var controller: ActivityController<MainActivity>? = null
+    private val controllers = mutableListOf<ActivityController<MainActivity>>()
 
     private val installer get() = harness.mediaBridge
     private val media get() = harness.media
@@ -38,15 +40,25 @@ class MediaWiringTest {
 
     @After
     fun tearDown() {
-        controller?.close()
+        controllers.forEach { it.close() }
         AppContainer.install(null)
     }
 
-    private fun launch(): MainActivity {
-        val created = Robolectric.buildActivity(MainActivity::class.java).setup()
-        controller = created
+    private fun launch(card: Intent = harness.lastCard()): MainActivity {
+        val created = Robolectric.buildActivity(MainActivity::class.java, card).setup()
+        controllers += created
         return created.get()
     }
+
+    /** Close [activity]'s card, as back or the recent apps do. */
+    private fun close(activity: MainActivity) {
+        val controller = controllers.single { it.get() === activity }
+        activity.finish()
+        controller.pause().stop().destroy()
+        controllers.remove(controller)
+    }
+
+    private fun MainActivity.label(): String = binding!!.label
 
     private fun MainActivity.origin(): String = binding!!.let { Origins.origin(it.label, it.port) }
 
@@ -59,14 +71,12 @@ class MediaWiringTest {
             .toString()
 
     @Test
-    fun `the bridge is offered to the running endpoint's origin, and moves with a switch`() {
-        harness.seed("ticket-alpha", "ticket-beta", selected = 0)
-        val activity = launch()
-        val alpha = activity.origin()
-        activity.selectEndpoint(1)
-        val beta = activity.origin()
+    fun `the bridge is offered to each card's own origin`() {
+        harness.seed("ticket-alpha", "ticket-beta")
+        val alpha = launch(harness.cardOf("ticket-alpha")).origin()
+        val beta = launch(harness.cardOf("ticket-beta")).origin()
 
-        assertEquals(listOf("install:$alpha", "uninstall:$alpha", "install:$beta"), installer.events)
+        assertEquals(listOf("install:$alpha", "install:$beta"), installer.events)
     }
 
     @Test
@@ -74,7 +84,7 @@ class MediaWiringTest {
         harness.seed("ticket-alpha")
         launch()
         assertTrue(media.shown.isEmpty())
-        assertFalse(media.active)
+        assertNull(media.owner)
     }
 
     @Test
@@ -84,7 +94,7 @@ class MediaWiringTest {
         val toPage = installer.post(report())
 
         assertEquals(listOf("Song"), media.shown.map { it.title })
-        assertTrue(media.active)
+        assertEquals(harness.proxy.labelFor("ticket-alpha"), media.owner)
 
         media.pressButton(MediaAction.Next)
         media.pressButton(MediaAction.SeekTo, 61_000)
@@ -108,29 +118,50 @@ class MediaWiringTest {
         launch()
         installer.post(report())
         installer.post("""{"metadata": null}""")
-        assertFalse(media.active)
+        assertNull(media.owner)
         assertEquals(1, media.ends)
     }
 
     @Test
-    fun `switching endpoints, a new page and closing the app each end it`() {
-        harness.seed("ticket-alpha", "ticket-beta", selected = 0)
-        val activity = launch()
+    fun `a new page and closing the card each end it, and another card's do not`() {
+        harness.seed("ticket-alpha", "ticket-beta")
+        val alpha = launch(harness.cardOf("ticket-alpha"))
+        val beta = launch(harness.cardOf("ticket-beta"))
+        val alphaOrigin = alpha.origin()
 
-        installer.post(report())
-        activity.selectEndpoint(1)
-        assertFalse("a switch ends it", media.active)
+        installer.post(report(), from = alphaOrigin)
+        val webView = beta.findViewById<WebView>(R.id.web_view)
+        shadowOf(webView).webViewClient.onPageStarted(webView, Origins.url(beta.label(), beta.binding!!.port), null)
+        close(beta)
+        assertEquals("another card's new page, and its closing, leave it", alpha.label(), media.owner)
 
-        installer.post(report())
-        val webView = activity.findViewById<WebView>(R.id.web_view)
-        shadowOf(webView).webViewClient.onPageStarted(webView, Origins.url(activity.binding!!.label, activity.binding!!.port), null)
-        assertFalse("a new page ends it", media.active)
+        val own = alpha.findViewById<WebView>(R.id.web_view)
+        shadowOf(own).webViewClient.onPageStarted(own, Origins.url(alpha.label(), alpha.binding!!.port), null)
+        assertNull("a new page ends it", media.owner)
 
-        installer.post(report())
-        controller!!.pause().stop().destroy()
-        controller = null
-        assertFalse("closing the app ends it", media.active)
-        assertEquals(3, media.ends)
+        installer.post(report(), from = alphaOrigin)
+        close(alpha)
+        assertNull("closing the card ends it", media.owner)
+        assertEquals(2, media.ends)
+    }
+
+    @Test
+    fun `a page that starts playing takes the session from another card's, and one that doesn't leaves it`() {
+        harness.seed("ticket-alpha", "ticket-beta")
+        val alpha = launch(harness.cardOf("ticket-alpha"))
+        val beta = launch(harness.cardOf("ticket-beta"))
+        val toAlpha = installer.post(report("One"), from = alpha.origin())
+
+        installer.post(report("Paused", playing = false), from = beta.origin())
+        assertEquals(alpha.label(), media.owner)
+        media.pressButton(MediaAction.Next)
+        assertEquals(listOf("""{"action":"nexttrack"}"""), toAlpha)
+
+        val toBeta = installer.post(report("Two"), from = beta.origin())
+        assertEquals(beta.label(), media.owner)
+        media.pressButton(MediaAction.Next)
+        assertEquals("the buttons are the new page's", listOf("""{"action":"nexttrack"}"""), toBeta)
+        assertEquals(1, toAlpha.size)
     }
 
     @Test
@@ -141,7 +172,7 @@ class MediaWiringTest {
         @Suppress("DEPRECATION")
         activity.onBackPressed()
         assertFalse("playing: the app stays", activity.isFinishing)
-        assertTrue(media.active)
+        assertEquals(activity.label(), media.owner)
 
         installer.post("""{"metadata": null}""")
         @Suppress("DEPRECATION")
@@ -150,16 +181,38 @@ class MediaWiringTest {
     }
 
     @Test
-    fun `autoplay is off unless the endpoint allows it, and follows the switch in settings`() {
-        harness.seed("ticket-alpha", "ticket-beta", selected = 0)
-        harness.store.save(harness.store.load().setAutoplay(1, true))
-        val activity = launch()
-        val settings = activity.findViewById<WebView>(R.id.web_view).settings
+    fun `back goes to the background only in the card that plays`() {
+        harness.seed("ticket-alpha", "ticket-beta")
+        val alpha = launch(harness.cardOf("ticket-alpha"))
+        val beta = launch(harness.cardOf("ticket-beta"))
+        installer.post(report(), from = alpha.origin())
 
-        assertTrue("a tap is needed by default", settings.mediaPlaybackRequiresUserGesture)
-        activity.selectEndpoint(1)
-        assertFalse("the endpoint allows it", settings.mediaPlaybackRequiresUserGesture)
-        activity.selectEndpoint(0)
-        assertTrue(settings.mediaPlaybackRequiresUserGesture)
+        @Suppress("DEPRECATION")
+        beta.onBackPressed()
+        assertTrue("another card's music keeps nothing of this one", beta.isFinishing)
+        assertFalse(alpha.isFinishing)
+    }
+
+    @Test
+    fun `autoplay is off unless the endpoint allows it, and follows the switch in settings`() {
+        harness.seed("ticket-alpha", "ticket-beta")
+        harness.store.save(harness.store.load().setAutoplay(1, true))
+        val alpha = launch(harness.cardOf("ticket-alpha"))
+        val beta = launch(harness.cardOf("ticket-beta"))
+        fun MainActivity.needsTap() = findViewById<WebView>(R.id.web_view).settings.mediaPlaybackRequiresUserGesture
+
+        assertTrue("a tap is needed by default", alpha.needsTap())
+        assertFalse("the endpoint allows it", beta.needsTap())
+
+        alpha.showSettings()
+        alpha.findViewById<android.view.View>(R.id.settings_content)
+            .findViewWithTag<com.google.android.material.materialswitch.MaterialSwitch>("autoplay:0").isChecked = true
+        assertFalse("this card's, at once", alpha.needsTap())
+
+        alpha.findViewById<android.view.View>(R.id.settings_content)
+            .findViewWithTag<com.google.android.material.materialswitch.MaterialSwitch>("autoplay:1").isChecked = false
+        val betaController = controllers.single { it.get() === beta }
+        betaController.pause().resume()
+        assertTrue("another card's, when it is next shown", beta.needsTap())
     }
 }

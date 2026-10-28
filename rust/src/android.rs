@@ -7,8 +7,9 @@
 //!
 //! The mutable static is the one piece of shared state in the crate. The JNI
 //! boundary has nowhere else for it to live: Kotlin holds no Rust value, so the
-//! running proxy has to be findable from a bare function call.
+//! running proxies have to be findable from a bare function call.
 
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use jni::{
@@ -22,11 +23,11 @@ use crate::{
     ticket,
 };
 
-/// The proxy, if one is running. At most one: the app switches endpoints rather
-/// than running several.
-fn current() -> &'static Mutex<Option<Running>> {
-    static CURRENT: OnceLock<Mutex<Option<Running>>> = OnceLock::new();
-    CURRENT.get_or_init(|| Mutex::new(None))
+/// The proxies running, by the label of their endpoint: one per endpoint the
+/// app has a card open for.
+fn running() -> &'static Mutex<HashMap<String, Running>> {
+    static RUNNING: OnceLock<Mutex<HashMap<String, Running>>> = OnceLock::new();
+    RUNNING.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Error codes returned in place of a port. Mirrored by `NativeProxy.kt`.
@@ -97,7 +98,8 @@ pub extern "system" fn Java_com_example_irohbrowser_NativeProxy_nativeInstallCon
 }
 
 /// Start the proxy for `ticket`, returning the bound loopback port, or a
-/// negative error code.
+/// negative error code. One already running for the same endpoint is replaced,
+/// and stopped; those of other endpoints go on.
 #[no_mangle]
 pub extern "system" fn Java_com_example_irohbrowser_NativeProxy_nativeStart(
     mut env: JNIEnv,
@@ -113,8 +115,10 @@ pub extern "system" fn Java_com_example_irohbrowser_NativeProxy_nativeStart(
         Ok(running) => {
             let port = running.port() as jint;
             log::info!("proxy listening on 127.0.0.1:{port} as {}", running.label());
-            // Replaces whatever was running, whose Drop stops it.
-            *lock() = Some(running);
+            // Replaces this endpoint's, if one was running: its Drop stops it,
+            // once the lock is let go, as in nativeStop.
+            let replaced = lock().insert(running.label().to_string(), running);
+            drop(replaced);
             port
         }
         Err(runtime::StartError::Ticket(cause)) => {
@@ -125,19 +129,6 @@ pub extern "system" fn Java_com_example_irohbrowser_NativeProxy_nativeStart(
             log::error!("could not start: {cause}");
             ERROR_START_FAILED
         }
-    }
-}
-
-/// The DNS label for the running proxy's origin, or null if none is running.
-#[no_mangle]
-pub extern "system" fn Java_com_example_irohbrowser_NativeProxy_nativeLabel(
-    env: JNIEnv,
-    _class: JClass,
-) -> jstring {
-    let label = lock().as_ref().map(|running| running.label().to_string());
-    match label.and_then(|label| env.new_string(label).ok()) {
-        Some(label) => label.into_raw(),
-        None => JObject::null().into_raw() as jstring,
     }
 }
 
@@ -160,40 +151,47 @@ pub extern "system" fn Java_com_example_irohbrowser_NativeProxy_nativeIdentity(
     }
 }
 
-/// Android blocked this app's network (`blocked`), or gave it back: the running
-/// proxy, if there is one, closes the connections it has open
-/// ([`Running::network_blocked`]).
+/// Android blocked this app's network (`blocked`), or gave it back: every
+/// running proxy closes the connections it has open ([`Running::network_blocked`]).
 #[no_mangle]
 pub extern "system" fn Java_com_example_irohbrowser_NativeProxy_nativeNetworkBlocked(
     _env: JNIEnv,
     _class: JClass,
     blocked: jboolean,
 ) {
-    if let Some(running) = lock().as_ref() {
-        let blocked = blocked != 0;
-        log::info!(
-            "network {}: closing the proxy's connections",
-            if blocked { "blocked by Android" } else { "back" }
-        );
-        running.network_blocked(blocked);
+    let running = lock();
+    if running.is_empty() {
+        return;
     }
+    let blocked = blocked != 0;
+    log::info!(
+        "network {}: closing the proxies' connections",
+        if blocked { "blocked by Android" } else { "back" }
+    );
+    running.values().for_each(|proxy| proxy.network_blocked(blocked));
 }
 
-/// Stop the proxy, if one is running. Idempotent.
+/// Stop the proxy of the endpoint labelled `label`, if one is running.
+/// Idempotent; the others go on.
 #[no_mangle]
 pub extern "system" fn Java_com_example_irohbrowser_NativeProxy_nativeStop(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
+    label: JString,
 ) {
-    *lock() = None;
+    let Ok(label) = env.get_string(&label) else { return };
+    // Taken out first and dropped once the lock is let go: stopping waits for the
+    // proxy's runtime, and the others shouldn't wait on that.
+    let stopped = lock().remove(&String::from(label));
+    drop(stopped);
 }
 
 /// The lock, recovered from poisoning.
 ///
-/// A panic while holding it would otherwise make the proxy unstartable for the
-/// rest of the process, which is a worse outcome than proceeding with whatever
-/// the panicking call left behind — an `Option<Running>` has no invariant a
-/// panic could break.
-fn lock() -> std::sync::MutexGuard<'static, Option<Running>> {
-    current().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+/// A panic while holding it would otherwise make every proxy unstartable for
+/// the rest of the process, which is a worse outcome than proceeding with
+/// whatever the panicking call left behind -- a map of running proxies has no
+/// invariant a panic could break.
+fn lock() -> std::sync::MutexGuard<'static, HashMap<String, Running>> {
+    running().lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }

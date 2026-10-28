@@ -57,19 +57,29 @@ Both forms the tooling prints are accepted, as is a bare 64-character endpoint i
 a ticket that carries relay urls: it lets the phone dial without depending on DNS
 discovery, which is the flakiest part of the path on Android.
 
+## Cards
+
+Every endpoint opens in a card of its own, listed separately in the recent apps under the
+endpoint's name, with its own page. Music keeps playing in media-store while you copy a
+password in pw-mgr, and you switch between them the way you switch between apps, with
+nothing reloaded. Opening an endpoint brings its card back if it has one. The launcher icon
+brings back the card you used last. Closing a card, with back on its first page or by
+swiping it away, closes only that endpoint. See DESIGN.md, Cards.
+
 ## Endpoints and passkeys
 
 The menu's **Endpoints and passkeys** screen lists every saved endpoint:
 
 - **Each endpoint:** its name and its origin, `http://<label>.localhost:<port>`, with
-  buttons to open it, rename it or remove it.
+  buttons to open it (in its card), rename it or remove it. The card you are in is marked
+  "this card", and the others that are open "open".
 - **Under each endpoint:** its passkeys, with the account, when it was created and where
   the key is kept ("in the StrongBox security chip" on a Pixel). Each one can be deleted.
 - **Names:** an endpoint the user hasn't named is listed by its label, the same hex its
   origin starts with.
-- **Removing an endpoint:** this signs you out of it, but its passkeys stay on the phone,
-  listed under "Passkeys without an endpoint". Adding the endpoint again makes them usable
-  again.
+- **Removing an endpoint:** this signs you out of it and closes its card, but its passkeys
+  stay on the phone, listed under "Passkeys without an endpoint". Adding the endpoint again
+  makes them usable again.
 - **Deleting a passkey:** this removes the phone's key. The server's record of it stays,
   but can never be used.
 - **Media plays without a tap:** off by default. On, the endpoint's pages may start media
@@ -81,8 +91,9 @@ The menu's **Endpoints and passkeys** screen lists every saved endpoint:
 A page that sets `navigator.mediaSession.metadata` and plays is shown as Android shows a
 music app: a notification with the page's title and buttons, the same controls on the lock
 screen, and the headset's buttons. The app keeps running with the screen off while it
-plays. Back on the first page sends the app to the background instead of closing it.
-Closing the app, or swiping it away, stops the page and the music. Pages that set no
+plays. Back on the first page sends the card to the background instead of closing it.
+Closing its card, or swiping it away, stops the page and the music; other cards don't. The
+notification shows the card that started playing last, and opens it. Pages that set no
 metadata are unaffected. See DESIGN.md, Media.
 
 ## Debugging
@@ -115,13 +126,13 @@ explanation, so logcat is the only place the reason exists.
 ## On-device checks
 
 The test suites cover everything reachable off a phone. These are the ones that are not,
-and they are worth walking after a change to the WebView or the endpoint switching:
+and they are worth walking after a change to the WebView or the cards:
 
 1. Log in; kill the app from the recents screen; reopen → still logged in, on the page you
    were on. Needs the server to set `Max-Age` or `Expires` on the session cookie: a cookie
    with neither dies with the process no matter what the app does.
-2. Log in to endpoint A; switch to B → not logged in, and A's cookie is never sent to B.
-   Switch back to A → **still logged in**, because each endpoint has its own origin.
+2. Log in to endpoint A; open B → not logged in, and A's cookie is never sent to B.
+   Back to A's card → **still logged in**, because each endpoint has its own origin.
 3. Open Chrome and hit the same loopback port while the app holds a session → you reach the
    server, but **not** logged in. The port itself cannot be closed to other apps (DESIGN.md);
    what protects the session is that the cookie is in the WebView's own jar.
@@ -186,9 +197,10 @@ adb shell cat /data/local/tmp/squat.log
 Finish each check with a control, `adb shell "echo probe | toybox nc -w 2 127.0.0.1 <port>"`,
 which must show up in the log. That proves the listener was really there.
 
-15. Open endpoint A, then switch to B. Listen on A's port, and press back in the app until
-    it closes. The log shows nothing but the probe: the history was dropped after the
-    switch, and any request there would be refused anyway.
+15. Open endpoints A and B, each in its card, and swipe A's card away. Listen on A's port,
+    and use B for a while, media-store's player say, whose service worker fetches. The log
+    shows nothing but the probe: neither B's page nor any service worker reaches a port
+    no proxy holds.
 16. With B open, send the app to the background and run `adb shell am kill
     com.example.irohbrowser`. Listen on B's port, then reopen the app from recents. The
     proxy logs "preferred port … unavailable", the page comes back on another port, and the
@@ -235,9 +247,9 @@ metadata and handlers, for example media-store (DESIGN.md, Media).
 26. With "Media plays without a tap" off, pause and resume from the notification. Then let
     a track end, or press next while the app is hidden: if the next track does not start,
     turn the switch on for the endpoint and try again.
-27. Press back on the page's first screen while it plays: the app goes to the background
-    and keeps playing. With nothing playing, back closes the app as before.
-28. Swipe the app away from the recents screen: the music stops and the notification goes.
+27. Press back on the page's first screen while it plays: the card goes to the background
+    and keeps playing. With nothing playing, back closes the card as before.
+28. Swipe the card away from the recents screen: the music stops and the notification goes.
 29. Pause and wait ten minutes: the notification goes.
 30. Open an endpoint whose pages set no Media Session metadata, such as pw-mgr: no
     notification, and everything works as before.
@@ -252,8 +264,8 @@ These need a page behind the endpoint that saves files it holds, through a link 
     numbered, "name (1).ext".
 32. Download a large track (hundreds of MB). The page shows how much it has read; the app
     stays responsive while the file is written, and the saved file plays.
-33. Start a large download and switch to another endpoint before it is saved: "Could not
-    save …" shows, and nothing half written appears in Downloads.
+33. Start a large download and close its card before it is saved: nothing half written
+    appears in Downloads.
 34. A download link to the endpoint's own server (not a `blob:` URL) still goes to the
     system downloader, with its notification, as before.
 
@@ -280,8 +292,29 @@ These follow from `targetSdk` 37 (DESIGN.md, The window and back; Downloads and 
 39. Tap a field near the bottom of a page: the keyboard pushes the page up, and the field
     stays in view while typing.
 40. Back, in turn: from the settings screen it returns to the page; on a page with history
-    it goes back in it; on the first page while something plays the app goes to the
-    background and keeps playing; with nothing playing it leaves the app.
+    it goes back in it; on the first page while something plays the card goes to the
+    background and keeps playing; with nothing playing it closes the card.
 41. In media-store's Add music, Or a folder → Choose Folder: the system's folder picker
     opens, and the preview lists the folder's files under the folder's name, its subfolders
     kept.
+
+### Cards
+
+These need two endpoints, such as media-store and pw-mgr (DESIGN.md, Cards).
+
+42. Open both from **Endpoints and passkeys**: each is a card of its own in the recent
+    apps, named after its endpoint. Moving between them leaves each page where it was,
+    with nothing reloaded.
+43. Play music in media-store, open pw-mgr, copy a password, and paste it in another app:
+    the music plays throughout, and pw-mgr is still unlocked when you come back to it.
+44. From pw-mgr's card or any other app, tap the playback notification: media-store's card
+    comes forward.
+45. Press the launcher icon: the card used last comes forward, and no new card appears in
+    the recent apps. Open an endpoint whose card is open from another card's list: its card
+    comes forward, and there is still one.
+46. Swipe pw-mgr's card away while music plays: the music goes on. Swipe media-store's: it
+    stops, and the notification goes.
+47. Remove an endpoint from another card's list: its card goes from the recent apps.
+48. With both cards in the recent apps, send the app to the background and run `adb shell
+    am kill com.example.irohbrowser`. Open each card from the recent apps: each comes back
+    on its own endpoint, on the page it was on.

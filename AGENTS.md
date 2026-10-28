@@ -76,7 +76,7 @@ at all. All three fail silently, so nothing points at them.
 
 **There are four doors from page JavaScript into the app: the passkey bridge, the
 clipboard bridge, the media session bridge and the download bridge.** Keep all four narrow.
-The clipboard one only takes text to copy, only from the running proxy's origin, and only
+The clipboard one only takes text to copy, only from its card's proxy's origin, and only
 while the page is on screen and focused (`ClipboardBridge.answer`). The media session one
 only takes what a page says it plays, from the running proxy's origin, and sends back
 nothing but a button's web name and a time (`MediaSessionBridge`); it works with the app in
@@ -106,8 +106,23 @@ Gradle and Robolectric's runtime jar for both the build and the shell; a new `ta
 needs a new jar there (its name is in Robolectric's `DefaultSdkProvider`).
 
 **`addDocumentStartJavaScript` only reaches documents that start after it.** That is why
-`openSelected` offers the bridges before `loadUrl`. Their scripts and listeners are
-installed per origin and withdrawn on every switch, together with any prompt still showing.
+`openEndpoint` offers the bridges before `loadUrl`. Their scripts and listeners are
+installed per card, for its origin, and withdrawn whenever its proxy stops, together with
+any prompt still showing.
+
+**Every endpoint is a card: a task of its own** (`Cards.kt`, DESIGN.md's Cards). A card
+is `MainActivity` opened by `EndpointCards.intent`, a document intent whose data is the
+endpoint's label, and Android finds a card again by that data alone: open a card only
+through it, or a second one appears. `MainActivity` must stay `standard`: as `singleTop`
+it was handed its own card's intent, launcher and card alike, and crashed. A card's label
+is fixed for its life. The launcher's
+task is not a card (`EndpointCards.isLauncher`): it starts the last endpoint's card and
+finishes in `onCreate`, before any view exists, which is why `onDestroy` checks for the
+WebView. Robolectric's `setup()` goes on to `onResume` regardless, so tests of the
+launcher only `create()` it. Anything process-wide -- the service-worker client, the media
+session, `PlaybackService.onTaskRemoved`, `NetworkBlockWatch` -- serves every card: it
+must hold nothing of one activity, and decide by label (`MediaPlayback.owner`) or over
+every running proxy (`ProxyController.running`).
 
 **`passkeys.js` and `PasskeyBridge.NAME` are joined by a string**, and so are
 `clipboard.js` and `ClipboardBridge.NAME`, `media-session.js` and
@@ -141,14 +156,16 @@ public key pass. `PasskeyAuthenticatorTest` builds its own verifier.
 
 **Cookies ignore ports.** A request to `<label>.localhost` on any port carries that
 endpoint's cookies, and any app can listen on a loopback port our proxy isn't holding. So
-the WebView must never request a loopback origin other than the running proxy's.
-`MainActivity.refusal` (`Origins.mayRequest`) enforces this on every request, service
-workers included. Any new way of making requests needs it too: another client, another
-hook, a restore path. Clearing the history after a switch and replacing a restored page
-on the wrong port keep the UI from walking into a refusal; they are not the protection.
-A restored WebView starts loading at once, on its own thread, so `openSelected` restores
-the state only after the proxy is running and the passkey script is installed. Restoring
-earlier, as `onCreate` once did, gets the restored page refused.
+the WebView must never request a loopback origin other than a running proxy's.
+`requestCheck` (`Origins.mayRequest`) enforces this on every request: a card's page
+against its own proxy (`MainActivity.pageCheck`), service workers against every running
+one. Any new way of making requests needs it too: another client, another hook, a restore
+path. Clearing the history after a start and replacing a restored page on the wrong port
+keep the UI from walking into a refusal; they are not the protection. A restored WebView
+starts loading at once, on its own thread, so `openEndpoint` restores the state only after
+the proxy is running and the passkey script is installed. Restoring earlier, as `onCreate`
+once did, gets the restored page refused. Never stop another card's proxy while its page
+lives: close its card (`CardTasks`), whose own `onDestroy` stops it.
 
 **The WebView reaches nothing but the tunnel, in three layers** (`Confinement.kt`):
 `Origins.mayRequest` refuses every request that is not the running proxy's origin; a
@@ -160,8 +177,8 @@ External links open only on a tap (`hasGesture`). A page wanting a CDN font or a
 login is expected to fail. Serve it from the far side; do not loosen the check.
 
 **Every endpoint has an origin, running or not.** `ProxyController.identify` reads it from
-the ticket in Rust, starting nothing. Removing an endpoint that is not on screen depends
-on it: its site data is cleared at its preferred port. The open endpoint uses the running
+the ticket in Rust, starting nothing. Removing an endpoint without a card depends on it:
+its site data is cleared at its preferred port. One open in a card uses its running
 proxy's port instead, because the proxy may have fallen back to another one.
 
 **Endpoint names are optional.** `Endpoint.name` is null until the user names one, and
@@ -228,7 +245,8 @@ Kotlin (`app/src/main/java/com/example/irohbrowser/`):
   security boundary.
 - `Confinement.kt` — keeping the WebView off the network: the proxy override, and the seam
   that installs `assets/no-webrtc.js`.
-- `MainActivity.kt` — orchestration only.
+- `MainActivity.kt` — one card: orchestration only.
+- `Cards.kt` — the intents that open cards, and `CardTasks`, the seam that closes another.
 - `AppContainer.kt` — dependency seam; tests install their own.
 - `Settings.kt` — what the "Endpoints and passkeys" screen lists: each endpoint's origin,
   its passkeys, and the passkeys whose endpoint is gone. Pure.
@@ -303,13 +321,18 @@ detail, so logcat is the only place the reason exists.
   a well-behaved server library would not.
 - Kotlin tests never touch the real proxy. `testing/FakeProxy` records the call *order*,
   which is what the activity has to get right: stop, start, load.
-- **Sessions must survive a relaunch and a switch.** `SiteData` has no "clear everything"
-  on purpose; the only clear is per-origin, on removal. An earlier version cleared on every
-  `openSelected`, which ran at startup too and silently logged the user out on every launch.
-  `relaunching keeps the session` is the guard against that coming back.
-- The Robolectric suite cannot reach `*.localhost` resolution or real cookie behaviour.
-  Those are the on-device checks in README.md, and they are the ones to run after touching
-  the WebView or endpoint switching.
+- **Sessions must survive a relaunch and other cards.** `SiteData` has no "clear
+  everything" on purpose; the only clear is per-origin, on removal. An earlier version
+  cleared every time an endpoint opened, which ran at startup too and silently logged the
+  user out on every launch. `relaunching keeps the session` is the guard against that
+  coming back.
+- Several cards are several activities: a test builds one controller per card
+  (`TestHarness.cardOf`), and the fake bridges keep a receiver per origin. Closing a card
+  in a test is `finish()` and then destroying it; destroying alone is Android recreating
+  it, which keeps the proxy.
+- The Robolectric suite cannot reach `*.localhost` resolution, real cookie behaviour, or
+  real tasks. Those are the on-device checks in README.md, and they are the ones to run
+  after touching the WebView or the cards.
 - Passkeys are tested at three levels:
   - **`PasskeyAuthenticatorTest`**: whole ceremonies with software keys, verified by
     webauthn4j acting as the server.
@@ -323,8 +346,9 @@ detail, so logcat is the only place the reason exists.
 `AGENTS.md` at the repo root of the wider workspace applies: prefer pure functions, avoid
 mutation, keep state minimal and at the edges. The deliberate exceptions are:
 
-- the `OnceLock<Mutex<Option<Running>>>` in `android.rs`: the JNI boundary has nowhere
-  else for it to live;
+- the `OnceLock<Mutex<HashMap<String, Running>>>` in `android.rs`, the running proxies by
+  label: the JNI boundary has nowhere else for it to live. `NativeProxy` mirrors their
+  bindings, which the service workers' check reads on every request;
 - the `Endpoints` field on `MainActivity`: an Android activity is a mutable object by
   construction;
 - the ceremony in progress in `PasskeyBridge`: callbacks from the prompt are the only way

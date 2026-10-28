@@ -31,6 +31,8 @@ class AppContainer(
     val downloads: DownloadTarget,
     /** Where saving them runs: one thread, in order, off the main one. Tests run it at once. */
     val io: Executor,
+    /** How a card closes another endpoint's (see [EndpointCards]). */
+    val cardTasks: CardTasks = PlatformCardTasks,
     /**
      * How to reach the browser's stored site data. A factory rather than a
      * value because the real one needs the activity's WebView, which does not

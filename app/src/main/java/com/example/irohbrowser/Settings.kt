@@ -19,11 +19,13 @@ data class EndpointRow(
     val name: String,
     /** Its origin, or null for a ticket the Rust side cannot read. */
     val origin: String?,
-    /** Whether it is the one on screen. */
+    /** Whether its card is open, with a page: its proxy runs. */
     val open: Boolean,
     val passkeys: List<PasskeyRow>,
     /** Whether its pages may play media without a tap. */
     val autoplay: Boolean = false,
+    /** Whether it is the endpoint of the card the screen is shown in. */
+    val here: Boolean = false,
 )
 
 /** Everything the settings screen shows. */
@@ -45,20 +47,22 @@ object Settings {
 
     /**
      * @param identities one per endpoint in [endpoints], as `ProxyController.identify` reads them
-     * @param running the proxy currently running, which is the authority on the open endpoint's port
+     * @param running the proxies running, which are the authority on the ports of the endpoints open in cards
+     * @param here the label of the endpoint of the card the screen is shown in, if it has one
      * @param storage where a passkey's key lives, as the vault reports it
      */
     fun model(
         endpoints: Endpoints,
         identities: List<EndpointIdentity?>,
-        running: ProxyBinding?,
+        running: List<ProxyBinding>,
+        here: String?,
         passkeys: List<StoredPasskey>,
         storage: (StoredPasskey) -> KeyStorage?,
     ): SettingsModel {
         val rows = endpoints.all.mapIndexed { index, endpoint ->
-            val binding = running?.takeIf { index == endpoints.selectedIndex }
             val identity = identities.getOrNull(index)
-            val label = binding?.label ?: identity?.label
+            val binding = running.find { it.label == identity?.label }
+            val label = identity?.label
             EndpointRow(
                 index = index,
                 name = endpoint.displayName(label),
@@ -69,6 +73,7 @@ object Settings {
                     .filter { label != null && it.rpId == Origins.host(label) }
                     .map { row(it, storage) },
                 autoplay = endpoint.autoplay,
+                here = label != null && label == here,
             )
         }
         val claimed = rows.flatMap { it.passkeys }.map { it.credentialId }.toSet()

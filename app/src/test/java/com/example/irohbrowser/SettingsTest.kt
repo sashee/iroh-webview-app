@@ -18,10 +18,11 @@ class SettingsTest {
     private fun model(
         endpoints: Endpoints,
         identities: List<EndpointIdentity?> = listOf(alpha, beta),
-        running: ProxyBinding? = null,
+        running: List<ProxyBinding> = emptyList(),
+        here: String? = null,
         passkeys: List<StoredPasskey> = emptyList(),
         storage: (StoredPasskey) -> KeyStorage? = { KeyStorage.StrongBox },
-    ) = Settings.model(endpoints, identities, running, passkeys, storage)
+    ) = Settings.model(endpoints, identities, running, here, passkeys, storage)
 
     private val both = Endpoints().add(Endpoint("ticket-a")).add(Endpoint("ticket-b", "rpi5")).select(1)
 
@@ -33,26 +34,40 @@ class SettingsTest {
     }
 
     @Test
-    fun `the open endpoint's origin comes from the running proxy`() {
+    fun `an open endpoint's origin comes from its running proxy`() {
         // The proxy may have fallen back from the preferred port; the page is
         // on the port it actually bound.
-        val rows = model(both, running = ProxyBinding(beta.label, 39999)).endpoints
+        val rows = model(both, running = listOf(ProxyBinding(beta.label, 39999))).endpoints
         assertEquals("http://bbbb000000000000.localhost:39999", rows[1].origin)
         assertTrue(rows[1].open)
     }
 
     @Test
     fun `the others' origins come from their preferred ports`() {
-        val rows = model(both, running = ProxyBinding(beta.label, 39999)).endpoints
+        val rows = model(both, running = listOf(ProxyBinding(beta.label, 39999))).endpoints
         assertEquals("http://aaaa000000000000.localhost:21000", rows[0].origin)
         assertFalse(rows[0].open)
     }
 
     @Test
-    fun `a selected endpoint that is not running is not open`() {
-        val rows = model(both, running = null).endpoints
+    fun `every endpoint open in a card is open, wherever its proxy runs`() {
+        val rows = model(both, running = listOf(ProxyBinding(beta.label, 39999), ProxyBinding(alpha.label, 39998))).endpoints
+        assertEquals(listOf(true, true), rows.map { it.open })
+        assertEquals("http://aaaa000000000000.localhost:39998", rows[0].origin)
+    }
+
+    @Test
+    fun `the selected endpoint is not open unless it runs`() {
+        val rows = model(both).endpoints
         assertFalse(rows[1].open)
         assertEquals("http://bbbb000000000000.localhost:22000", rows[1].origin)
+    }
+
+    @Test
+    fun `this card's endpoint is marked as here, running or not`() {
+        assertEquals(listOf(false, true), model(both, here = beta.label).endpoints.map { it.here })
+        assertEquals(listOf(false, false), model(both).endpoints.map { it.here })
+        assertEquals(listOf(false, false), model(both, identities = listOf(null, null), here = beta.label).endpoints.map { it.here })
     }
 
     @Test

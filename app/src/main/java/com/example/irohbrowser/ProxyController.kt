@@ -1,6 +1,6 @@
 package com.example.irohbrowser
 
-/** A running proxy: where to point the WebView. */
+/** A running proxy: where to point an endpoint's WebView. */
 data class ProxyBinding(val label: String, val port: Int)
 
 /**
@@ -33,16 +33,29 @@ sealed interface ProxyResult {
  * is for the wrong architecture and could not be loaded even if it were built.
  */
 interface ProxyController {
+    /**
+     * Start the proxy for [ticket]'s endpoint. One already running for the same
+     * endpoint is replaced; those of other endpoints, open in other cards, go on.
+     */
     fun start(ticket: String): ProxyResult
-    fun stop()
+
+    /** Stop the proxy of the endpoint labelled [label], if one runs. The others go on. */
+    fun stop(label: String)
+
+    /**
+     * Every proxy running, one per card with a page: what the checks that are
+     * the whole process's, the service workers', let requests reach.
+     * Thread-safe, as those run on the WebView's threads.
+     */
+    fun running(): List<ProxyBinding>
 
     /** The identity of the endpoint [ticket] names, or null when it is not a ticket. Pure. */
     fun identify(ticket: String): EndpointIdentity?
 
     /**
-     * Android blocked this app's network ([blocked]), or gave it back. The
-     * running proxy, if any, closes every connection it has open, and when
-     * the network is back asks iroh to look at it again. See [NetworkBlockWatch].
+     * Android blocked this app's network ([blocked]), or gave it back. Every
+     * running proxy closes every connection it has open, and when the network
+     * is back asks iroh to look at it again. See [NetworkBlockWatch].
      */
     fun networkBlocked(blocked: Boolean)
 }

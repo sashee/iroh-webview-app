@@ -148,28 +148,37 @@ The browsing-direction security boundary.
   `0.0.0.0`, `[::1]` and its IPv4-mapped forms — and nothing else
 - the running proxy's origin may be requested at any path; the same host on another port,
   other loopback origins, and anything loopback while nothing runs may not
+- with several running, each one's origin may, and neither's host on the other's port
 - requests off the device are left alone
 
 ### The activity — `MainActivityBehaviorTest`
 
-Driven through a fake proxy that records call order.
+Driven through a fake proxy that records call order, one activity per card.
 
-- first run shows the ticket field and starts nothing
-- connecting starts the proxy and loads its origin
-- a pasted ticket is trimmed before it is saved
-- an empty ticket is refused without starting anything
-- a saved endpoint is reopened on the next launch
-- switching stops the old proxy **before** starting the new one
+- the launcher opens the card of the endpoint used last, or the entry card with nothing
+  saved, starts nothing itself, and goes
+- a card's intent is a document intent, the same for the same endpoint and different for
+  another, and not the launcher's
+- the entry card shows the ticket field and starts nothing
+- connecting saves the ticket and opens its card, and the entry card goes
+- a pasted ticket is trimmed before it is saved; an empty one is refused; a rejected one
+  says so and is not saved
+- a card stops its endpoint's proxy **before** starting it, and loads its origin
+- the card in front becomes the one the launcher opens
+- a card for an endpoint no longer saved shows the ticket field
 - relaunching clears nothing — the regression that made every restart ask for the password
-- switching away and back clears nothing, so both sessions survive
-- adding an endpoint clears nothing
-- each endpoint gets its own origin, differing in **hostname** not just port
-- removing the last endpoint returns to the ticket field
-- removing an endpoint clears that origin and only that origin
-- removing an endpoint leaves the remaining one logged in
-- removing one of several opens the one that remains
+- cards run side by side, each with its own proxy and origin, differing in **hostname**
+  not just port, and nothing is cleared
+- opening another endpoint brings its card and leaves this one running, on its page;
+  opening its own only shows the page
+- a card brought back is as it was left; one whose endpoint would not start tries again
+- a card with nothing on it gives way to the endpoint opened from it
+- closing a card stops its proxy and only its; a card destroyed but not closed keeps it
+- removing this card's endpoint stops its proxy, clears its origin, blanks the page and
+  stays on the list; removing the last returns to the ticket field
+- removing another card's endpoint closes its card and clears it on the port its proxy
+  runs on; one with no card is cleared on its preferred port
 - a failed start shows an error and keeps the endpoint saved
-- a rejected ticket says so, and is not saved
 - pausing flushes cookies
 - our own pages stay in the WebView
 - an external link opens the real browser, asserted through the started Intent
@@ -184,13 +193,14 @@ to whatever app is listening there.
 - requests to the running proxy go through
 - the same host on another port is refused before anything is sent, with a response that
   is not cached
-- after a switch, the previous endpoint's origin is refused
+- a card's page reaches its own proxy and not another card's; a closed card's origin is
+  refused
 - other loopback addresses are refused, and the outside world is not
 - with nothing running, every loopback request is refused
-- service worker requests are checked the same way, and the check is removed with the
-  activity
-- switching drops the history once the new endpoint's page has loaded, and a late callback
-  for the page being left does not count
+- service worker requests are checked the same way, against every card's proxy, and the
+  check outlives the cards, refusing everything once none runs
+- a start drops the history once the endpoint's page has loaded, and a late callback for a
+  page left behind does not count
 - a restored page starts loading only after the proxy runs and both bridges' scripts are in
   (restored first, its request was refused, which the Pixel showed and Robolectric could not)
 - a restored page is kept when the proxy got its port back, and replaced by the front page
@@ -239,6 +249,8 @@ Declarations, which nothing else would catch.
 - the manifest does not enable cleartext traffic globally
 - backups are off
 - the launcher activity is the only exported component
+- the activity is launched `standard`, so one card can open another (as `singleTop` the
+  card's intent went to the activity on top instead)
 - no content providers are exported
 - cleartext is permitted for loopback and refused everywhere else
 - data extraction rules exclude everything and include nothing
@@ -347,8 +359,9 @@ code under test.
 ### Where the bridge is offered — `PasskeyWiringTest`
 
 - to the running endpoint's exact origin, and to nothing before one is running
-- a switch withdraws it from the old origin **before** offering it to the new one, and
-  withdraws a prompt the old page raised
+- each card offers it to its own origin, and each card's page signs for its own endpoint,
+  under its name
+- removing a card's endpoint withdraws a prompt its page raised
 - a failed start offers nothing; removing the endpoint or finishing the activity withdraws
   it
 - a page's request reaches the authenticator for the endpoint on screen, and the prompt
@@ -366,8 +379,8 @@ code under test.
 
 ### Where the clipboard bridge is offered — `ClipboardWiringTest`
 
-- to the running endpoint's exact origin, moved on a switch, and to nothing before one is
-  running; finishing the activity withdraws it
+- to each card's own origin, and to nothing before one is running; finishing the activity
+  withdraws it
 - a page's copy lands on the clipboard marked sensitive
 - a page behind the settings screen, or in a window without focus, copies nothing
 
@@ -392,15 +405,18 @@ code under test.
 
 ### Where the media session bridge is offered — `MediaWiringTest`
 
-- to the running endpoint's exact origin, moved on a switch
+- to each card's own origin
 - a page that never reports shows nothing
 - what a page plays is shown, and the system's buttons come back to that page as
   commands; another origin's report is ignored
-- a report without metadata, a switch, a new page in the main frame and closing the app
-  each end it
-- back on the first page sends the app to the background while something plays, and
-  closes it otherwise, as before
-- media needs a tap unless the endpoint allows otherwise, and that follows a switch
+- a report without metadata, a new page in the main frame and closing the card each end
+  it; another card's new page or closing does not
+- a page that starts playing takes the session from another card's, buttons and all; one
+  that only reports, paused, leaves it
+- back on the first page sends the card to the background while its page plays, and
+  closes it otherwise, as before; another card's music keeps nothing of this one
+- media needs a tap unless the endpoint allows otherwise; the switch applies to this card
+  at once, and to another's when it is next shown
 
 ### The download bridge — `PageDownloadsTest`
 
@@ -426,18 +442,20 @@ code under test.
 
 ### Where the download bridge is offered — `DownloadWiringTest`
 
-- to the running endpoint's exact origin, moved on a switch
+- to each card's own origin
 - a page's file is saved in Downloads, through the main thread's queue
-- a switch, a new page in the main frame and closing the app each discard a file half
-  saved
+- a new page in the main frame, closing the card and removing its endpoint each discard a
+  file half saved
 
 ### The settings screen's model — `SettingsTest`
 
 Plain JUnit: it is a pure function of the saved state.
 
 - every endpoint is listed in order, by its name or else its label
-- the open endpoint's origin comes from the running proxy, the others' from their
-  preferred ports; a selected endpoint that is not running is not open
+- an open endpoint's origin comes from its running proxy, the others' from their
+  preferred ports; every endpoint open in a card is open; the selected one is not open
+  unless it runs
+- this card's endpoint is marked as here, running or not
 - passkeys are listed under the endpoint whose host they belong to
 - a passkey whose endpoint is gone is listed on its own
 - a ticket the app cannot read has no origin and claims no passkeys
@@ -449,18 +467,21 @@ Plain JUnit: it is a pure function of the saved state.
 
 Driven through the menu, the buttons and the dialogs.
 
-- the menu opens a list of every endpoint, the open one marked, each with its origin
+- the menu opens a list of every endpoint, this card's marked, each with its origin
+- an endpoint open in another card is marked open, with the origin its proxy really has
 - an unnamed endpoint is listed by its label
 - passkeys are listed under their endpoint, with where the key lives
 - removing another endpoint asks first, then forgets only its site data, at its
-  preferred port, and **does not restart** the open one; declining removes nothing
-- removing the open endpoint opens the next and stays on the list
+  preferred port, closes its card, and **does not restart** this one; declining removes
+  nothing
+- removing this card's endpoint stays on the list, with nothing open here
 - a removed endpoint's passkeys are listed as without an endpoint
 - deleting a passkey asks first, then forgets it and its key; declining keeps it
 - a rename shows in the list and in the very next fingerprint prompt
-- opening another endpoint switches to it; opening the open one shows its page again
-  without reconnecting
-- the app bar says where you are, and its back arrow leaves the list
+- opening another endpoint opens its card, and this one goes back to its page; opening
+  this card's shows its page again without reconnecting
+- the app bar says where you are, its back arrow leaves the list, and off the list it
+  names the card's endpoint
 - back from the list, and from "Add endpoint", returns to the page
 - the autoplay switch is off by default; turning it on saves it and applies to the open
   page at once, and turning it on for another endpoint leaves the open page as it is

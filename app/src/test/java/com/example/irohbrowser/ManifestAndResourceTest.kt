@@ -128,6 +128,17 @@ class ManifestAndResourceTest {
     }
 
     @Test
+    fun `the activity is launched standard, so one card can open another`() {
+        // singleTop handed a card's intent to the activity on top -- the
+        // launcher's, or another card's -- instead of opening its task.
+        val activity = context.packageManager
+            .getPackageInfo(context.packageName, PackageManager.GET_ACTIVITIES)
+            .activities.orEmpty()
+            .single { it.name == "com.example.irohbrowser.MainActivity" }
+        assertEquals(android.content.pm.ActivityInfo.LAUNCH_MULTIPLE, activity.launchMode)
+    }
+
+    @Test
     fun `the playback service is the only service, not exported, and of the media playback type`() {
         // Another app could otherwise start it, and with it a notification
         // and a foreground service in this app's name.

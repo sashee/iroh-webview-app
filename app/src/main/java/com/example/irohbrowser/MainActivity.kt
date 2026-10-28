@@ -1,5 +1,6 @@
 package com.example.irohbrowser
 
+import android.app.ActivityManager
 import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
@@ -29,16 +30,24 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import java.io.ByteArrayInputStream
 
 /**
- * The whole app.
+ * One endpoint's card (see [EndpointCards]): the whole app, for that endpoint.
  *
- * It owns a WebView pointed at a loopback origin, and the small amount of state
- * that says which endpoint that origin belongs to. Everything else — cookies,
+ * It owns a WebView pointed at the endpoint's loopback origin, and the small
+ * amount of state that says which endpoint that is. Everything else — cookies,
  * caching, redirects, forms, relative URLs — is the browser's, by design.
+ * Other endpoints have cards of their own, beside this one, each with its
+ * page and proxy.
  */
 class MainActivity : AppCompatActivity() {
+
+    /**
+     * The endpoint this card is for, by label: fixed by the intent that opened
+     * it, for the card's life. Null for the entry card. Its endpoint may be
+     * gone -- removed, here or in another card -- and come back.
+     */
+    private val label: String? by lazy { EndpointCards.labelOf(intent) }
 
     private lateinit var container: AppContainer
     private lateinit var webView: WebView
@@ -48,21 +57,21 @@ class MainActivity : AppCompatActivity() {
     private lateinit var siteData: SiteData
 
     /**
-     * The proxy currently running, if any.
+     * This card's proxy, while it runs.
      *
      * Volatile because the WebView checks every request against it from its
-     * own thread (see [refusal]).
+     * own thread (see [pageCheck]).
      */
     @Volatile
     internal var binding: ProxyBinding? = null
         private set
 
     /**
-     * Set when an endpoint's front page is being loaded after a switch or a
-     * port change: once it has loaded, the history before it is dropped. That
-     * history leads to origins no proxy is serving any more -- another
-     * endpoint, or this one on a port it no longer holds -- where back would
-     * only find an error, or something else listening.
+     * Set when the endpoint's front page is being loaded after a start: once
+     * it has loaded, the history before it is dropped. That history leads to
+     * origins no proxy of this card serves any more -- this endpoint on a port
+     * it no longer holds, say -- where back would only find an error, or
+     * something else listening.
      */
     private var clearHistoryOnceLoaded = false
 
@@ -97,12 +106,21 @@ class MainActivity : AppCompatActivity() {
     /** The WebView's own renderer priority, to go back to once nothing plays. */
     private var rendererDefault: Pair<Int, Boolean> = WebView.RENDERER_PRIORITY_IMPORTANT to true
 
+    /** The check on the page's requests: this card's proxy, and nothing else. */
+    private val pageCheck: RequestCheck = requestCheck { listOfNotNull(binding) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        container = AppContainer.get(this)
+        // The launcher's way in: no card of its own, but the last endpoint's.
+        if (EndpointCards.isLauncher(intent)) {
+            startActivity(EndpointCards.lastUsed(this, container.store.load(), container.proxy::identify))
+            finishAndRemoveTask()
+            return
+        }
         setContentView(R.layout.activity_main)
         keepClearOfSystemBars()
 
-        container = AppContainer.get(this)
         webView = findViewById(R.id.web_view)
         entry = findViewById(R.id.entry)
         ticketField = findViewById(R.id.ticket_field)
@@ -151,9 +169,32 @@ class MainActivity : AppCompatActivity() {
 
         endpoints = container.store.load()
         // A restored WebView state already names a page; re-loading the index
-        // would throw away where the user was. It is handed to openSelected
+        // would throw away where the user was. It is handed to openEndpoint
         // rather than restored here: the proxy has to be running first.
-        openSelected(restoring = savedInstanceState)
+        openEndpoint(restoring = savedInstanceState)
+    }
+
+    /**
+     * Opened again (EndpointCards): as it was left, unless its endpoint has no
+     * page -- it would not start, or was removed and has been added again.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        endpoints = container.store.load()
+        if (binding == null && ownIndex() >= 0) openEndpoint()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Another card may have renamed this endpoint, or changed it, meanwhile.
+        endpoints = container.store.load()
+        val index = ownIndex()
+        // The card in front is the one the launcher opens next time.
+        if (index >= 0 && index != endpoints.selectedIndex) endpoints = container.store.update { it.select(index) }
+        endpoints.all.getOrNull(index)?.let { webView.settings.mediaPlaybackRequiresUserGesture = !it.autoplay }
+        describeCard()
+        if (settings.visibility == android.view.View.VISIBLE) showSettings()
     }
 
     private fun configureWebView() {
@@ -202,7 +243,7 @@ class MainActivity : AppCompatActivity() {
             // also back/forward and restored pages, which never reach
             // shouldOverrideUrlLoading.
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
-                refusal(request.url?.toString())
+                pageCheck(request.url?.toString())
 
             // A new page in the main frame: whatever the last one played, or
             // was saving, went with it, even if it never said so.
@@ -220,8 +261,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
         // A page's service worker fetches through its own client, not the
-        // WebViewClient. The route is process-wide; onDestroy removes it.
-        container.serviceWorkers.route(::refusal)
+        // WebViewClient. The route is process-wide, as are the workers, which
+        // do not say whose page they are: they may reach every running proxy.
+        // It holds nothing of a card, so it stays: with no card open, it
+        // refuses everything.
+        container.serviceWorkers.route(requestCheck(container.proxy::running))
         // WebRTC's UDP passes beneath both the request check and the proxy
         // override (Confinement), so pages do not get it. Before anything
         // loads: the script reaches only documents that start after it.
@@ -338,84 +382,111 @@ class MainActivity : AppCompatActivity() {
         runCatching { startActivity(intent) }
     }
 
-    /** Save a ticket and switch to it. */
+    /**
+     * Save a ticket, and open its endpoint: in its own card, which this one
+     * gives way to if it has nothing on it.
+     */
     internal fun addEndpoint(ticket: String) {
         val trimmed = ticket.trim()
         // Checked before saving: a string that names no endpoint would only
         // sit in the list as an entry that can never open.
-        if (trimmed.isEmpty() || container.proxy.identify(trimmed) == null) {
+        val identity = trimmed.takeIf { it.isNotEmpty() }?.let(container.proxy::identify)
+        if (identity == null) {
             showEntryError(getString(R.string.error_bad_ticket))
             return
         }
         endpoints = container.store.update { it.add(Endpoint(trimmed)) }
-        openSelected()
+        if (identity.label == label) openEndpoint() else openCard(identity.label)
     }
 
-    /** Switch to a saved endpoint. */
-    internal fun selectEndpoint(index: Int) {
-        endpoints = container.store.update { it.select(index) }
-        openSelected()
+    /**
+     * Open saved endpoint [index]: this card's is shown, or started again if it
+     * has no page; another's card is brought forward, or opened.
+     */
+    internal fun openEndpointAt(index: Int) {
+        val endpoint = endpoints.all.getOrNull(index) ?: return
+        val target = container.proxy.identify(endpoint.ticket)?.label
+            ?: return showEntryError(getString(R.string.error_bad_ticket))
+        when {
+            target != label -> openCard(target)
+            // Already there: only shown again, as reconnecting would reload it.
+            binding != null -> showWebView()
+            else -> openEndpoint()
+        }
+    }
+
+    /**
+     * Bring [target]'s card forward, or open it. This card stays behind as it
+     * was, its page back on screen for when it is next shown -- unless there is
+     * nothing on it, no endpoint or one that would not start, when it goes.
+     */
+    private fun openCard(target: String) {
+        startActivity(EndpointCards.intent(this, target))
+        if (binding == null) finishAndRemoveTask() else showWebView()
     }
 
     /**
      * Forget a saved endpoint, and the session that went with it.
      *
-     * Any endpoint, not only the one on screen. Only removing the open one
-     * changes what is on screen; removing another leaves its proxy, and the
-     * page, alone.
+     * Any endpoint, not only this card's. Removing this card's leaves the card
+     * with none, until one is opened from it; removing another's closes that
+     * one's card.
      */
     internal fun removeEndpoint(index: Int) {
-        if (index !in endpoints.all.indices) return
-        val open = index == endpoints.selectedIndex
-        originOf(index)?.let(siteData::clear)
+        val endpoint = endpoints.all.getOrNull(index) ?: return
+        val identity = container.proxy.identify(endpoint.ticket)
+        // Before its proxy stops, which is the authority on its port.
+        val origin = identity?.let(::originOf)
+        val here = identity != null && identity.label == label
+        when {
+            identity == null -> Unit
+            here -> {
+                closeEndpoint()
+                // The page would only go on making requests nothing answers.
+                webView.loadUrl("about:blank")
+            }
+            else -> container.cardTasks.close(this, identity.label)
+        }
+        origin?.let(siteData::clear)
         endpoints = container.store.update { it.remove(index) }
-        if (open) openSelected()
+        if (here) {
+            describeCard()
+            if (endpoints.isEmpty) showEntry()
+        }
     }
 
     /**
-     * Where endpoint [index] is browsed: the running proxy's origin if it is the
-     * open one -- the proxy may have fallen back from its preferred port --
-     * and the origin its ticket names otherwise.
+     * Where [identity]'s endpoint is browsed: its running proxy's origin, if
+     * it is open in a card -- the proxy may have fallen back from its preferred
+     * port -- and the origin its ticket names otherwise.
      */
-    private fun originOf(index: Int): String? {
-        val running = binding?.takeIf { index == endpoints.selectedIndex }
-        if (running != null) return Origins.origin(running.label, running.port)
-        val identity = container.proxy.identify(endpoints.all[index].ticket) ?: return null
-        return Origins.origin(identity.label, identity.preferredPort)
+    private fun originOf(identity: EndpointIdentity): String {
+        val running = container.proxy.running().find { it.label == identity.label }
+        return running?.let { Origins.origin(it.label, it.port) } ?: Origins.origin(identity.label, identity.preferredPort)
+    }
+
+    /** Where this card's endpoint is in [endpoints]; -1 for the entry card, and when its endpoint is gone. */
+    private fun ownIndex(): Int {
+        val own = label ?: return -1
+        return endpoints.all.indexOfFirst { container.proxy.identify(it.ticket)?.label == own }
+    }
+
+    /** What the card is called, in the recent apps and its app bar: its endpoint's name. */
+    private fun cardName(): String =
+        endpoints.all.getOrNull(ownIndex())?.displayName(label) ?: getString(R.string.app_name)
+
+    private fun describeCard() {
+        val name = cardName()
+        setTaskDescription(ActivityManager.TaskDescription.Builder().setLabel(name).build())
+        if (settings.visibility != android.view.View.VISIBLE) supportActionBar?.title = name
     }
 
     /**
-     * Null to let a request to [url] through; a refusal when it is not the
-     * running proxy's origin -- where it would leave the device, or take the
-     * endpoint's cookies to whatever else is listening. See [Origins.mayRequest].
-     *
-     * The page sees only the 403, so logcat says what was refused.
-     */
-    private fun refusal(url: String?): WebResourceResponse? {
-        if (Origins.mayRequest(url, binding)) return null
-        Log.i(LOG_TAG, "refused a request to ${forLog(url)}")
-        return WebResourceResponse(
-            "text/plain",
-            "utf-8",
-            403,
-            "Forbidden",
-            mapOf("Cache-Control" to "no-store"),
-            ByteArrayInputStream("Refused: not the origin of the endpoint on screen.".toByteArray()),
-        )
-    }
-
-    /** The scheme and host of [url], for a log line: the rest may hold a token. */
-    private fun forLog(url: String?): String =
-        runCatching { Uri.parse(url) }.getOrNull()
-            ?.let { listOfNotNull(it.scheme, it.host).joinToString("://") }
-            ?: "?"
-
-    /**
-     * Point the browser at the selected endpoint.
+     * Point the browser at this card's endpoint, its proxy started anew.
      *
      * Nothing is cleared here. Each endpoint has its own `<label>.localhost`
      * origin, so the browser keeps their cookies apart on its own, and a session
-     * is expected to survive both switching away and closing the app — the
+     * is expected to survive both closing a card and closing the app — the
      * clearing that used to happen here ran on every launch too, which is what
      * made a relaunch ask for the password again.
      *
@@ -429,12 +500,13 @@ class MainActivity : AppCompatActivity() {
      * because something else is holding that port -- the page and its history
      * would lead there.
      */
-    private fun openSelected(restoring: Bundle? = null) {
-        container.proxy.stop()
-        binding = null
-        withdrawBridges()
+    private fun openEndpoint(restoring: Bundle? = null) {
+        // Stopped first even with no page: an earlier activity of this card
+        // may have left it running, holding the port it should get again.
+        closeEndpoint()
 
-        val endpoint = endpoints.selected
+        val endpoint = endpoints.all.getOrNull(ownIndex())
+        describeCard()
         if (endpoint == null) {
             showEntry()
             return
@@ -470,6 +542,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** This card's page loses its proxy, and the bridges with it. */
+    private fun closeEndpoint() {
+        label?.let(container.proxy::stop)
+        binding = null
+        withdrawBridges()
+    }
+
     /**
      * Give this endpoint's pages, and only them, a way to reach its passkeys,
      * to copy text marked sensitive, to show what they play, and to save the
@@ -483,7 +562,7 @@ class MainActivity : AppCompatActivity() {
         val origin = Origins.origin(running.label, running.port)
         bridgeWithdrawals = listOfNotNull(
             container.passkeys.installer.install(webView, origin) { message, sourceOrigin, reply ->
-                val name = endpoints.selected?.displayName(running.label) ?: running.label
+                val name = cardName()
                 passkeys.receive(message, sourceOrigin, PasskeySite(running.label, running.port, name), reply)
             },
             container.clipboardBridge.install(webView, origin) { message, sourceOrigin, reply ->
@@ -497,7 +576,7 @@ class MainActivity : AppCompatActivity() {
                     null -> Unit
                     MediaReport.Nothing -> endMedia()
                     is MediaReport.Current -> {
-                        container.media.show(report.media) { action, seekToMs -> reply(MediaSessionBridge.command(action, seekToMs)) }
+                        container.media.show(running.label, report.media) { action, seekToMs -> reply(MediaSessionBridge.command(action, seekToMs)) }
                         keepRenderer()
                     }
                 }
@@ -523,9 +602,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun endMedia() {
-        container.media.end()
+        label?.let(container.media::end)
         keepRenderer()
     }
+
+    /** Whether the system shows what this card's page plays: the media session is the app's, and goes to one page at a time. */
+    private val playing: Boolean
+        get() = label != null && container.media.owner == label
 
     /**
      * While something plays, the page's renderer stays as important as the
@@ -535,7 +618,7 @@ class MainActivity : AppCompatActivity() {
      * foreground at least.
      */
     private fun keepRenderer() {
-        val (priority, waived) = if (container.media.active) WebView.RENDERER_PRIORITY_IMPORTANT to false else rendererDefault
+        val (priority, waived) = if (playing) WebView.RENDERER_PRIORITY_IMPORTANT to false else rendererDefault
         runCatching { webView.setRendererPriorityPolicy(priority, waived) }
     }
 
@@ -570,7 +653,8 @@ class MainActivity : AppCompatActivity() {
             Settings.model(
                 endpoints = endpoints,
                 identities = endpoints.all.map { container.proxy.identify(it.ticket) },
-                running = binding,
+                running = container.proxy.running(),
+                here = label,
                 passkeys = container.passkeys.store.load(),
                 storage = { container.passkeys.vault.storage(it.alias) },
             ),
@@ -581,7 +665,7 @@ class MainActivity : AppCompatActivity() {
         showingSettings(true)
     }
 
-    /** Back to whatever the list was opened over: the page, or the ticket field when nothing runs. */
+    /** Back to whatever the list was opened over: the page, or the ticket field when the card has none. */
     private fun leaveSettings() {
         if (binding != null) showWebView() else showEntry()
     }
@@ -590,32 +674,29 @@ class MainActivity : AppCompatActivity() {
     private fun showingSettings(shown: Boolean) {
         supportActionBar?.apply {
             setDisplayHomeAsUpEnabled(shown)
-            title = getString(if (shown) R.string.menu_settings else R.string.app_name)
+            title = if (shown) getString(R.string.menu_settings) else cardName()
         }
     }
 
     private val settingsActions = object : SettingsActions {
-        override fun open(index: Int) {
-            // The one already open is only shown again: reconnecting would
-            // reload a page that is already there.
-            if (index == endpoints.selectedIndex && binding != null) showWebView() else selectEndpoint(index)
-        }
+        override fun open(index: Int) = openEndpointAt(index)
 
         override fun rename(index: Int, name: String) {
             endpoints = container.store.update { it.rename(index, name) }
+            describeCard()
             showSettings()
         }
 
         override fun remove(index: Int) {
             removeEndpoint(index)
-            // Removing the open endpoint opens another one behind this screen;
-            // stay here while there is still a list to show.
+            // Stay here while there is still a list to show.
             if (endpoints.all.isNotEmpty()) showSettings()
         }
 
         override fun setAutoplay(index: Int, on: Boolean) {
             endpoints = container.store.update { it.setAutoplay(index, on) }
-            if (index == endpoints.selectedIndex) webView.settings.mediaPlaybackRequiresUserGesture = !on
+            // Another card's page has it the next time that card is shown.
+            if (index == ownIndex()) webView.settings.mediaPlaybackRequiresUserGesture = !on
             showSettings()
         }
 
@@ -663,7 +744,7 @@ class MainActivity : AppCompatActivity() {
             webView.visibility == android.view.View.VISIBLE && webView.canGoBack() -> webView.goBack()
             // Leaving would close the page, and stop what it plays: go to the
             // background instead, as a music app does.
-            container.media.active -> moveTaskToBack(true)
+            playing -> moveTaskToBack(true)
             else -> return false
         }
         return true
@@ -697,14 +778,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // The launcher's way in, gone before it had anything.
+        if (!::webView.isInitialized) return super.onDestroy()
         // A page waiting on a chooser that will never answer would be stuck.
         pendingFileChooser?.onReceiveValue(null)
         pendingFileChooser = null
         withdrawBridges()
-        container.serviceWorkers.route(null)
         // Not in onPause: the proxy has to survive the screen going off, or
-        // coming back would need a fresh dial for every connection.
-        if (isFinishing) container.proxy.stop()
+        // coming back would need a fresh dial for every connection. Finishing
+        // is the card closing -- by back, or from the recent apps.
+        if (isFinishing) label?.let(container.proxy::stop)
         super.onDestroy()
     }
 

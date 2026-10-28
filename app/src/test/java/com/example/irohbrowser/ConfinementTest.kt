@@ -48,7 +48,7 @@ class ConfinementTest {
     }
 
     private fun launch(): MainActivity {
-        val created = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val created = Robolectric.buildActivity(MainActivity::class.java, harness.lastCard()).setup()
         controller = created
         return created.get()
     }

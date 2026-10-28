@@ -1,5 +1,6 @@
 package com.example.irohbrowser
 
+import android.content.Intent
 import android.content.DialogInterface
 import android.os.Looper
 import android.view.View
@@ -10,6 +11,7 @@ import android.widget.TextView
 import android.webkit.WebView
 import androidx.appcompat.app.ActionBar
 import androidx.appcompat.app.AlertDialog
+import androidx.test.core.app.ApplicationProvider
 import com.example.irohbrowser.testing.TestHarness
 import org.json.JSONObject
 import org.junit.After
@@ -38,7 +40,7 @@ import org.robolectric.shadows.ShadowDialog
 class SettingsScreenTest {
 
     private lateinit var harness: TestHarness
-    private var controller: ActivityController<MainActivity>? = null
+    private val controllers = mutableListOf<ActivityController<MainActivity>>()
 
     @Before
     fun setUp() {
@@ -48,13 +50,13 @@ class SettingsScreenTest {
 
     @After
     fun tearDown() {
-        controller?.close()
+        controllers.forEach { it.close() }
         AppContainer.install(null)
     }
 
-    private fun launch(): MainActivity {
-        val created = Robolectric.buildActivity(MainActivity::class.java).setup()
-        controller = created
+    private fun launch(card: Intent = harness.lastCard()): MainActivity {
+        val created = Robolectric.buildActivity(MainActivity::class.java, card).setup()
+        controllers += created
         return created.get()
     }
 
@@ -108,7 +110,7 @@ class SettingsScreenTest {
     // --- what it shows ---
 
     @Test
-    fun `the menu opens a list of every endpoint, the open one marked`() {
+    fun `the menu opens a list of every endpoint, this card's marked`() {
         harness.seed("ticket-alpha", "ticket-beta", selected = 1)
         val activity = launch()
 
@@ -118,10 +120,24 @@ class SettingsScreenTest {
         assertEquals(View.GONE, activity.webView().visibility)
         val texts = activity.texts()
         assertTrue(texts.toString(), "ticket-alpha" in texts)
-        assertTrue(texts.toString(), activity.getString(R.string.settings_open_marker, "ticket-beta") in texts)
+        assertTrue(texts.toString(), activity.getString(R.string.settings_here_marker, "ticket-beta") in texts)
         // The open one where it really is; the other where it would be.
         assertTrue(texts.toString(), activity.origin() in texts)
         assertTrue(texts.toString(), preferredOrigin("ticket-alpha") in texts)
+    }
+
+    @Test
+    fun `an endpoint open in another card is marked open, where its proxy really is`() {
+        harness.seed("ticket-alpha", "ticket-beta")
+        val alpha = launch(harness.cardOf("ticket-alpha"))
+        val beta = launch(harness.cardOf("ticket-beta"))
+
+        beta.showSettings()
+
+        val texts = beta.texts()
+        assertTrue(texts.toString(), beta.getString(R.string.settings_open_marker, "ticket-alpha") in texts)
+        assertTrue(texts.toString(), beta.getString(R.string.settings_here_marker, "ticket-beta") in texts)
+        assertTrue(texts.toString(), alpha.origin() in texts)
     }
 
     @Test
@@ -129,7 +145,7 @@ class SettingsScreenTest {
         harness.seed("ticket-alpha", named = false)
         val activity = launch()
         activity.showSettings()
-        assertTrue(activity.getString(R.string.settings_open_marker, harness.proxy.labelFor("ticket-alpha")) in activity.texts())
+        assertTrue(activity.getString(R.string.settings_here_marker, harness.proxy.labelFor("ticket-alpha")) in activity.texts())
     }
 
     @Test
@@ -161,7 +177,8 @@ class SettingsScreenTest {
         assertEquals(listOf(preferredOrigin("ticket-alpha")), harness.siteData.cleared)
         assertEquals(listOf("ticket-beta"), activity.endpoints.all.map { it.ticket })
         assertEquals("ticket-beta", activity.endpoints.selected?.ticket)
-        assertTrue("the open endpoint was restarted", harness.proxy.calls.isEmpty())
+        assertTrue("this card's endpoint was restarted", harness.proxy.calls.isEmpty())
+        assertEquals("its card, if it has one, closes", listOf(harness.proxy.labelFor("ticket-alpha")), harness.cardTasks.closed)
         assertEquals(View.VISIBLE, activity.settings().visibility)
     }
 
@@ -179,7 +196,7 @@ class SettingsScreenTest {
     }
 
     @Test
-    fun `removing the open endpoint opens the next and stays on the list`() {
+    fun `removing this card's endpoint stays on the list, with nothing open here`() {
         harness.seed("ticket-alpha", "ticket-beta", selected = 1)
         val activity = launch()
         val removed = activity.origin()
@@ -189,8 +206,9 @@ class SettingsScreenTest {
         answer(DialogInterface.BUTTON_POSITIVE)
 
         assertEquals(listOf(removed), harness.siteData.cleared)
-        assertEquals("ticket-alpha", harness.proxy.startedTickets.last())
+        assertEquals(listOf("ticket-beta"), harness.proxy.startedTickets)
         assertEquals(View.VISIBLE, activity.settings().visibility)
+        assertEquals(listOf("ticket-alpha"), activity.texts().filter { it.startsWith("ticket-") })
     }
 
     @Test
@@ -256,7 +274,7 @@ class SettingsScreenTest {
         answer(DialogInterface.BUTTON_POSITIVE)
 
         assertEquals("rpi5", activity.endpoints.all[0].name)
-        assertTrue(activity.getString(R.string.settings_open_marker, "rpi5") in activity.texts())
+        assertTrue(activity.getString(R.string.settings_here_marker, "rpi5") in activity.texts())
         createPasskey("alice")
         assertEquals("rpi5", harness.passkeys.ui.prompts.last().endpointName)
     }
@@ -289,14 +307,16 @@ class SettingsScreenTest {
     }
 
     @Test
-    fun `opening another endpoint switches to it`() {
+    fun `opening another endpoint opens its card, and this one goes back to its page`() {
         harness.seed("ticket-alpha", "ticket-beta", selected = 1)
         val activity = launch()
         activity.showSettings()
 
         activity.tap("open:0")
 
-        assertEquals("ticket-alpha", harness.proxy.startedTickets.last())
+        val application = ApplicationProvider.getApplicationContext<android.app.Application>()
+        assertEquals(harness.cardOf("ticket-alpha").data, shadowOf(application).nextStartedActivity.data)
+        assertEquals(listOf("ticket-beta"), harness.proxy.startedTickets)
         assertEquals(View.VISIBLE, activity.webView().visibility)
         assertEquals(View.GONE, activity.settings().visibility)
     }
@@ -329,7 +349,7 @@ class SettingsScreenTest {
 
         activity.onOptionsItemSelected(RoboMenuItem(android.R.id.home))
         assertEquals(View.VISIBLE, activity.webView().visibility)
-        assertEquals(activity.getString(R.string.app_name), bar.title)
+        assertEquals("the card's endpoint", "ticket-alpha", bar.title)
         assertTrue(bar.displayOptions and ActionBar.DISPLAY_HOME_AS_UP == 0)
     }
 

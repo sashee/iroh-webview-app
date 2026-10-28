@@ -55,7 +55,11 @@ class SettingsScreen(private val content: LinearLayout, private val actions: Set
 
     private fun endpointView(row: EndpointRow): View = vertical().apply {
         setPadding(0, dp(16), 0, dp(8))
-        val name = if (row.open) context.getString(R.string.settings_open_marker, row.name) else row.name
+        val name = when {
+            row.here -> context.getString(R.string.settings_here_marker, row.name)
+            row.open -> context.getString(R.string.settings_open_marker, row.name)
+            else -> row.name
+        }
         addView(title(name))
         addView(
             small(row.origin ?: context.getString(R.string.settings_unreadable_ticket))
@@ -63,9 +67,9 @@ class SettingsScreen(private val content: LinearLayout, private val actions: Set
         )
         addView(
             horizontal().apply {
-                // On every row, the open one included: with a single endpoint
+                // On every row, this card's included: with a single endpoint
                 // it is the only way back to the page that does not depend on
-                // knowing about the system back button.
+                // knowing about the system back button. Another's opens its card.
                 addView(button(R.string.settings_open, "open:${row.index}") { actions.open(row.index) })
                 addView(button(R.string.settings_rename, "rename:${row.index}") { askToRename(row) })
                 addView(button(R.string.settings_remove, "remove:${row.index}") { askToRemove(row) })

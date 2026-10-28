@@ -1,5 +1,6 @@
 package com.example.irohbrowser
 
+import android.content.Intent
 import com.example.irohbrowser.testing.FakePasskeyUi
 import com.example.irohbrowser.testing.TestHarness
 import org.json.JSONObject
@@ -26,7 +27,7 @@ import org.robolectric.android.controller.ActivityController
 class PasskeyWiringTest {
 
     private lateinit var harness: TestHarness
-    private var controller: ActivityController<MainActivity>? = null
+    private val controllers = mutableListOf<ActivityController<MainActivity>>()
 
     private val installer get() = harness.passkeys.installer
 
@@ -38,14 +39,22 @@ class PasskeyWiringTest {
 
     @After
     fun tearDown() {
-        controller?.close()
+        controllers.forEach { it.close() }
         AppContainer.install(null)
     }
 
-    private fun launch(): MainActivity {
-        val created = Robolectric.buildActivity(MainActivity::class.java).setup()
-        controller = created
+    private fun launch(card: Intent = harness.lastCard()): MainActivity {
+        val created = Robolectric.buildActivity(MainActivity::class.java, card).setup()
+        controllers += created
         return created.get()
+    }
+
+    /** Close [activity]'s card, as back or the recent apps do. */
+    private fun close(activity: MainActivity) {
+        val controller = controllers.single { it.get() === activity }
+        activity.finish()
+        controller.pause().stop().destroy()
+        controllers.remove(controller)
     }
 
     private fun MainActivity.origin(): String = binding!!.let { Origins.origin(it.label, it.port) }
@@ -70,24 +79,38 @@ class PasskeyWiringTest {
     }
 
     @Test
-    fun `switching endpoints withdraws the bridge before offering it to the new origin`() {
-        harness.seed("ticket-alpha", "ticket-beta", selected = 0)
-        val activity = launch()
-        val alpha = activity.origin()
-        activity.selectEndpoint(1)
-        val beta = activity.origin()
+    fun `each card offers the bridge to its own origin`() {
+        harness.seed("ticket-alpha", "ticket-beta")
+        val alpha = launch(harness.cardOf("ticket-alpha")).origin()
+        val beta = launch(harness.cardOf("ticket-beta")).origin()
 
-        assertEquals(listOf("install:$alpha", "uninstall:$alpha", "install:$beta"), installer.events)
+        assertEquals(listOf("install:$alpha", "install:$beta"), installer.events)
     }
 
     @Test
-    fun `a prompt raised by the old endpoint's page is withdrawn on a switch`() {
-        harness.seed("ticket-alpha", "ticket-beta", selected = 0)
+    fun `each card's page signs for its own endpoint`() {
+        harness.seed("ticket-alpha", "ticket-beta")
+        val alpha = launch(harness.cardOf("ticket-alpha"))
+        val beta = launch(harness.cardOf("ticket-beta"))
+
+        installer.post(creation, from = alpha.origin())
+        installer.post(creation.replace("\"AQ\"", "\"Ag\""), from = beta.origin())
+
+        assertEquals(
+            setOf(Origins.host(alpha.binding!!.label), Origins.host(beta.binding!!.label)),
+            harness.passkeys.store.load().map { it.rpId }.toSet(),
+        )
+        assertEquals(listOf("ticket-alpha", "ticket-beta"), harness.passkeys.ui.prompts.map { it.endpointName })
+    }
+
+    @Test
+    fun `a prompt raised by a card's page is withdrawn when its endpoint is removed`() {
+        harness.seed("ticket-alpha", "ticket-beta")
         val activity = launch()
         harness.passkeys.ui.verdict = FakePasskeyUi.Verdict.Hold
         installer.post(creation)
 
-        activity.selectEndpoint(1)
+        activity.removeEndpoint(1)
 
         assertEquals(1, harness.passkeys.ui.withdrawn)
         assertTrue(harness.passkeys.store.load().isEmpty())
@@ -116,8 +139,7 @@ class PasskeyWiringTest {
         harness.seed("ticket-alpha")
         val activity = launch()
         val origin = activity.origin()
-        controller!!.pause().stop().destroy()
-        controller = null
+        close(activity)
         assertEquals("uninstall:$origin", installer.events.last())
     }
 
@@ -142,6 +164,6 @@ class PasskeyWiringTest {
         harness.seed("ticket-alpha")
         val activity = launch()
         assertTrue(activity.binding != null)
-        activity.selectEndpoint(0) // withdrawing nothing must not fail
+        activity.removeEndpoint(0) // withdrawing nothing must not fail
     }
 }

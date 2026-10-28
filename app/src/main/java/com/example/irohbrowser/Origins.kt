@@ -45,10 +45,11 @@ object Origins {
     }
 
     /**
-     * Whether the WebView may send a request to [url] while [running] is the
-     * proxy behind the page.
+     * Whether the WebView may send a request to [url] while [running] are the
+     * proxies behind its pages: a card's own, for its page; all of them, for
+     * the service workers, which are the whole process's.
      *
-     * Only to the running proxy's exact origin, port included. Nothing else
+     * Only to a running proxy's exact origin, port included. Nothing else
      * goes through the tunnel, so anything else would leave the device: an
      * image or a beacon on another host tells it the phone's address and what
      * the page is, and the page comes from an arbitrary peer. On loopback the
@@ -62,8 +63,8 @@ object Origins {
      * pages never pass through [externalDestination], so this is checked on
      * every request instead.
      */
-    fun mayRequest(url: String?, running: ProxyBinding?): Boolean =
-        (running != null && isOwnOrigin(url, running.label, running.port)) || scheme(url) in LOCAL_SCHEMES
+    fun mayRequest(url: String?, running: Collection<ProxyBinding>): Boolean =
+        running.any { isOwnOrigin(url, it.label, it.port) } || scheme(url) in LOCAL_SCHEMES
 
     private val LOCAL_SCHEMES = setOf("data", "blob", "about")
 

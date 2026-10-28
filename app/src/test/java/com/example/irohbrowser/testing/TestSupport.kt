@@ -1,6 +1,7 @@
 package com.example.irohbrowser.testing
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -9,8 +10,10 @@ import com.example.irohbrowser.AppContainer
 import com.example.irohbrowser.BridgeBytesReceiver
 import com.example.irohbrowser.BridgeInstaller
 import com.example.irohbrowser.BridgeReceiver
+import com.example.irohbrowser.CardTasks
 import com.example.irohbrowser.DownloadFile
 import com.example.irohbrowser.DownloadTarget
+import com.example.irohbrowser.EndpointCards
 import com.example.irohbrowser.EndpointStore
 import com.example.irohbrowser.EndpointIdentity
 import com.example.irohbrowser.Endpoints
@@ -53,7 +56,7 @@ import kotlin.random.Random
  */
 class FakeProxy : ProxyController {
 
-    /** Every call, in order, as `"start:<ticket>"` or `"stop"`. */
+    /** Every call, in order, as `"start:<ticket>"` or `"stop:<label>"`. */
     val calls = mutableListOf<String>()
 
     /** Tickets that should fail, and how. */
@@ -72,26 +75,25 @@ class FakeProxy : ProxyController {
     /** Runs as each start begins, so a test can see what had happened by then. */
     var onStart: () -> Unit = {}
 
-    var running: ProxyBinding? = null
-        private set
+    /** What runs, by label. */
+    private val bindings = linkedMapOf<String, ProxyBinding>()
 
     override fun start(ticket: String): ProxyResult {
         onStart()
         calls += "start:$ticket"
-        failures[ticket]?.let {
-            running = null
-            return ProxyResult.Failed(it)
-        }
+        failures[ticket]?.let { return ProxyResult.Failed(it) }
         val port = if (bindPreferredPorts) preferredPortFor(ticket) else nextPort++
         val binding = ProxyBinding(label = labelFor(ticket), port = port)
-        running = binding
+        bindings[binding.label] = binding
         return ProxyResult.Started(binding)
     }
 
-    override fun stop() {
-        calls += "stop"
-        running = null
+    override fun stop(label: String) {
+        calls += "stop:$label"
+        bindings.remove(label)
     }
+
+    override fun running(): List<ProxyBinding> = bindings.values.toList()
 
     /**
      * A preferred port that `start` never hands out, so a test can tell which
@@ -282,7 +284,11 @@ class FakePasskeyUi : PasskeyUi {
     }
 }
 
-/** A [BridgeInstaller] that records where the bridge was offered, and lets a test post to it. */
+/**
+ * A [BridgeInstaller] that records where the bridge was offered, and lets a
+ * test post to it. One for every card, as the real one is: each card offers
+ * the bridge to its own page, whose origin is where a test posts to.
+ */
 class FakeBridgeInstaller : BridgeInstaller {
     /** Every install and uninstall, in order, as `"install:<origin>"` and `"uninstall:<origin>"`. */
     val events = mutableListOf<String>()
@@ -290,11 +296,14 @@ class FakeBridgeInstaller : BridgeInstaller {
     /** Act like a WebView without the features the bridge needs. */
     var supported = true
 
-    var installedOrigin: String? = null
-        private set
+    private class Installed(val receive: BridgeReceiver, val receiveBytes: BridgeBytesReceiver?)
 
-    private var receiver: BridgeReceiver? = null
-    private var bytesReceiver: BridgeBytesReceiver? = null
+    /** What is installed, by the origin it was offered to; the last offered last. */
+    private val installed = linkedMapOf<String, Installed>()
+
+    /** The origin offered the bridge last, of those it still is. */
+    val installedOrigin: String?
+        get() = installed.keys.lastOrNull()
 
     /** Runs as each install begins, so a test can see what had happened by then. */
     var onInstall: () -> Unit = {}
@@ -308,21 +317,25 @@ class FakeBridgeInstaller : BridgeInstaller {
         onInstall()
         if (!supported) return null
         events += "install:$origin"
-        installedOrigin = origin
-        receiver = receive
-        bytesReceiver = receiveBytes
+        val here = Installed(receive, receiveBytes)
+        installed[origin] = here
         return {
             events += "uninstall:$origin"
-            installedOrigin = null
-            receiver = null
-            bytesReceiver = null
+            installed.remove(origin, here)
         }
     }
 
-    /** Post [message] as a page of [from] would, and return what came back. */
+    private fun at(origin: String?): Installed =
+        installed[origin ?: error("nothing installed")] ?: installed.values.lastOrNull() ?: error("nothing installed")
+
+    /**
+     * Post [message] as a page of [from] would, and return what came back. It
+     * reaches the page offered the bridge for [from], else the last one: a
+     * page's message names the origin it came from, not the one it should.
+     */
     fun post(message: String, from: String = installedOrigin ?: error("nothing installed")): List<String> {
         val replies = mutableListOf<String>()
-        (receiver ?: error("nothing installed"))(message, from) { replies += it }
+        at(from).receive(message, from) { replies += it }
         return replies
     }
 
@@ -333,7 +346,7 @@ class FakeBridgeInstaller : BridgeInstaller {
      */
     fun postBytes(bytes: ByteArray, from: String = installedOrigin ?: error("nothing installed")): List<String> {
         val replies = mutableListOf<String>()
-        bytesReceiver?.invoke(bytes, from) { replies += it }
+        at(from).receiveBytes?.invoke(bytes, from) { replies += it }
         return replies
     }
 }
@@ -435,23 +448,35 @@ class FakeMediaPlayback : MediaPlayback {
 
     private var press: ((MediaAction, Long?) -> Unit)? = null
 
-    override val active: Boolean
-        get() = press != null
+    override var owner: String? = null
+        private set
 
-    override fun show(media: PageMedia, press: (MediaAction, Long?) -> Unit) {
-        if (this.press == null && !media.playing) return
+    override fun show(owner: String, media: PageMedia, press: (MediaAction, Long?) -> Unit) {
+        // Nothing shown, or another page's: only playing takes it.
+        if (this.owner != owner && !media.playing) return
         shown += media
+        this.owner = owner
         this.press = press
     }
 
-    override fun end() {
-        if (press == null) return
+    override fun end(owner: String) {
+        if (this.owner != owner) return
         ends++
+        this.owner = null
         press = null
     }
 
     /** The user presses a button of the notification, the lock screen or a headset. */
     fun pressButton(action: MediaAction, seekToMs: Long? = null) = (press ?: error("nothing is shown"))(action, seekToMs)
+}
+
+/** Records the cards closed, by their endpoint's label, in order. */
+class FakeCardTasks : CardTasks {
+    val closed = mutableListOf<String>()
+
+    override fun close(context: Context, label: String) {
+        closed += label
+    }
 }
 
 /** A main-frame GET of [url], as the WebView hands it to its clients. */
@@ -490,6 +515,8 @@ class TestHarness(
 
     val downloads = FakeDownloadTarget()
 
+    val cardTasks = FakeCardTasks()
+
     fun install() {
         store.save(Endpoints())
         AppContainer.install(
@@ -506,6 +533,7 @@ class TestHarness(
                 downloads = downloads,
                 // At once, on the test's thread: what is written is there when the post returns.
                 io = { it.run() },
+                cardTasks = cardTasks,
                 siteData = { siteData },
             ),
         )
@@ -519,4 +547,14 @@ class TestHarness(
         }
         store.save(endpoints.select(selected))
     }
+
+    /** What the launcher opens: the card of the endpoint used last, or the entry. */
+    fun lastCard(): Intent = EndpointCards.lastUsed(context, store.load(), proxy::identify)
+
+    /** The card of [ticket]'s endpoint. */
+    fun cardOf(ticket: String): Intent = EndpointCards.intent(context, proxy.labelFor(ticket))
+
+    /** The launcher's own intent. */
+    fun launcher(): Intent =
+        Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setClassName(context, "com.example.irohbrowser.MainActivity")
 }

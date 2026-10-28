@@ -20,21 +20,26 @@ import android.util.Log
 /**
  * Showing the system what a page plays: a media session, and its notification.
  * A seam, like the others in [AppContainer]: tests install their own.
+ *
+ * One for the whole app, while every endpoint's card has a page of its own: it
+ * shows one page's, that of [owner], an endpoint by its label.
  */
 interface MediaPlayback {
 
     /**
-     * Show [media]. The buttons the user presses come to [press], with the
-     * position to seek to for [MediaAction.SeekTo]. Nothing is shown until the
-     * page plays, so a page that only sets metadata gets no notification.
+     * Show [media], what [owner]'s page plays. The buttons the user presses
+     * come to [press], with the position to seek to for [MediaAction.SeekTo].
+     * Nothing is shown until the page plays, so a page that only sets metadata
+     * gets no notification; and a page that starts playing takes the session
+     * from another endpoint's, while one that doesn't leaves it alone.
      */
-    fun show(media: PageMedia, press: (MediaAction, Long?) -> Unit)
+    fun show(owner: String, media: PageMedia, press: (MediaAction, Long?) -> Unit)
 
-    /** Stop showing anything: the page went, or stopped playing long ago. */
-    fun end()
+    /** [owner]'s page shows nothing any more -- it went, or stopped playing long ago: the session ends, if it is [owner]'s. */
+    fun end(owner: String)
 
-    /** Whether something is shown, which keeps the app running in the background. */
-    val active: Boolean
+    /** The endpoint whose page the session shows, if any: that keeps the app running in the background. */
+    val owner: String?
 }
 
 /**
@@ -52,22 +57,31 @@ class AndroidMediaPlayback(context: Context) : MediaPlayback {
     private val context = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val notifications get() = context.getSystemService(NotificationManager::class.java)
-    private val endWhenIdle = Runnable { end() }
+    private val endWhenIdle = Runnable { owner?.let(::end) }
 
     private var session: MediaSession? = null
     private var press: (MediaAction, Long?) -> Unit = { _, _ -> }
+
+    /** Whose page the session shows. Set with the session, and changed only by a page that starts playing. */
+    override var owner: String? = null
+        private set
 
     /** What the session shows, so only changes are passed on: the system UI warns about the rest. */
     private var shown: PageMedia? = null
     private var shownState: SessionState? = null
 
-    override val active: Boolean
-        get() = session != null
-
-    override fun show(media: PageMedia, press: (MediaAction, Long?) -> Unit) {
-        this.press = press
+    override fun show(owner: String, media: PageMedia, press: (MediaAction, Long?) -> Unit) {
         val opened = session
-        val current = opened ?: if (media.playing) open() else return
+        // Another endpoint's page plays: this one takes over only by playing too.
+        if (opened != null && this.owner != owner) {
+            if (!media.playing) return
+            this.owner = owner
+            shown = null
+            shownState = null
+            opened.setSessionActivity(openCard(context, owner))
+        }
+        this.press = press
+        val current = opened ?: if (media.playing) open(owner) else return
         val before = shown
         val state = MediaSessionBridge.sessionState(media)
         if (before == null || !sameMetadata(before, media)) current.setMetadata(metadataOf(media))
@@ -75,7 +89,7 @@ class AndroidMediaPlayback(context: Context) : MediaPlayback {
         when {
             opened == null -> startService(current, media)
             before == null || !sameMetadata(before, media) || before.playing != media.playing ->
-                notifications.notify(NOTIFICATION_ID, notification(context, current.sessionToken, media))
+                notifications.notify(NOTIFICATION_ID, notification(context, current.sessionToken, media, owner))
         }
         shown = media
         shownState = state
@@ -83,10 +97,12 @@ class AndroidMediaPlayback(context: Context) : MediaPlayback {
         if (!media.playing) main.postDelayed(endWhenIdle, PAUSED_LIMIT_MS)
     }
 
-    override fun end() {
+    override fun end(owner: String) {
+        if (this.owner != owner) return
         main.removeCallbacks(endWhenIdle)
         val ending = session ?: return
         session = null
+        this.owner = null
         shown = null
         shownState = null
         ending.isActive = false
@@ -98,7 +114,7 @@ class AndroidMediaPlayback(context: Context) : MediaPlayback {
         notifications.cancel(NOTIFICATION_ID)
     }
 
-    private fun open(): MediaSession = MediaSession(context, LOG_TAG).apply {
+    private fun open(owner: String): MediaSession = MediaSession(context, LOG_TAG).apply {
         setCallback(object : MediaSession.Callback() {
             override fun onPlay() = press(MediaAction.Play, null)
             override fun onPause() = press(MediaAction.Pause, null)
@@ -109,9 +125,10 @@ class AndroidMediaPlayback(context: Context) : MediaPlayback {
             override fun onRewind() = press(MediaAction.SeekBackward, null)
             override fun onFastForward() = press(MediaAction.SeekForward, null)
         })
-        openApp(context)?.let { setSessionActivity(it) }
+        setSessionActivity(openCard(context, owner))
         isActive = true
         session = this
+        this@AndroidMediaPlayback.owner = owner
     }
 
     private fun startService(current: MediaSession, media: PageMedia) {
@@ -121,6 +138,7 @@ class AndroidMediaPlayback(context: Context) : MediaPlayback {
         val intent = Intent(context, PlaybackService::class.java)
             .putExtra(PlaybackService.EXTRA_TOKEN, current.sessionToken)
             .putExtra(PlaybackService.EXTRA_TITLE, media.title)
+            .putExtra(PlaybackService.EXTRA_OWNER, owner)
         // Android refuses to start a foreground service from the background. A
         // page that starts playing on its own while the app is hidden gets its
         // session, but no notification, until the app is opened again.
@@ -148,23 +166,21 @@ class AndroidMediaPlayback(context: Context) : MediaPlayback {
         const val CHANNEL_ID = "playback"
         const val NOTIFICATION_ID = 1
 
-        /** The notification for [media] in the session [token]; its buttons are the session's. */
-        fun notification(context: Context, token: MediaSession.Token, media: PageMedia): Notification =
+        /** The notification for [media], [owner]'s, in the session [token]; its buttons are the session's. */
+        fun notification(context: Context, token: MediaSession.Token, media: PageMedia, owner: String?): Notification =
             Notification.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_media_play)
                 .setContentTitle(media.title.ifEmpty { context.getString(R.string.app_name) })
                 .setContentText(listOf(media.artist, media.album).filter { it.isNotEmpty() }.joinToString(" · "))
-                .setContentIntent(openApp(context))
+                .setContentIntent(owner?.let { openCard(context, it) })
                 .setStyle(Notification.MediaStyle().setMediaSession(token))
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setOngoing(media.playing)
                 .build()
 
-        /** Bringing the app back as the launcher does: its task, as it was left. */
-        private fun openApp(context: Context): PendingIntent? =
-            context.packageManager.getLaunchIntentForPackage(context.packageName)?.let {
-                PendingIntent.getActivity(context, 0, it, PendingIntent.FLAG_IMMUTABLE)
-            }
+        /** Bringing back [owner]'s card, as it was left (EndpointCards). */
+        private fun openCard(context: Context, owner: String): PendingIntent =
+            PendingIntent.getActivity(context, owner.hashCode(), EndpointCards.intent(context, owner), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 }
 
@@ -196,21 +212,26 @@ class PlaybackService : Service() {
         val media = PageMedia(title, "", "", playing = true, actions = emptySet(), positionMs = null, durationMs = null, speed = 1f)
         startForeground(
             AndroidMediaPlayback.NOTIFICATION_ID,
-            AndroidMediaPlayback.notification(this, token, media),
+            AndroidMediaPlayback.notification(this, token, media, intent.getStringExtra(EXTRA_OWNER)),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
         )
         return START_NOT_STICKY
     }
 
-    /** Swiped away from the recents screen: the page, and what it played, went with the activity. */
+    /**
+     * A card swiped away from the recents screen: if it was the one playing,
+     * its page, and what it played, went with it. Another's leaves this be.
+     */
     override fun onTaskRemoved(rootIntent: Intent?) {
-        AppContainer.get(this).media.end()
-        stopSelf()
+        val media = AppContainer.get(this).media
+        EndpointCards.labelOf(rootIntent)?.let(media::end)
+        if (media.owner == null) stopSelf()
     }
 
     companion object {
         const val ACTION_STOP = "com.example.irohbrowser.STOP_PLAYBACK"
         const val EXTRA_TOKEN = "token"
         const val EXTRA_TITLE = "title"
+        const val EXTRA_OWNER = "owner"
     }
 }

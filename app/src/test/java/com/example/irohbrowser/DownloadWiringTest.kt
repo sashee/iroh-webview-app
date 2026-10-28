@@ -1,5 +1,6 @@
 package com.example.irohbrowser
 
+import android.content.Intent
 import android.os.Looper
 import android.webkit.WebView
 import com.example.irohbrowser.testing.TestHarness
@@ -25,7 +26,7 @@ import org.robolectric.android.controller.ActivityController
 class DownloadWiringTest {
 
     private lateinit var harness: TestHarness
-    private var controller: ActivityController<MainActivity>? = null
+    private val controllers = mutableListOf<ActivityController<MainActivity>>()
 
     private val installer get() = harness.downloadBridge
     private val target get() = harness.downloads
@@ -38,14 +39,22 @@ class DownloadWiringTest {
 
     @After
     fun tearDown() {
-        controller?.close()
+        controllers.forEach { it.close() }
         AppContainer.install(null)
     }
 
-    private fun launch(): MainActivity {
-        val created = Robolectric.buildActivity(MainActivity::class.java).setup()
-        controller = created
+    private fun launch(card: Intent = harness.lastCard()): MainActivity {
+        val created = Robolectric.buildActivity(MainActivity::class.java, card).setup()
+        controllers += created
         return created.get()
+    }
+
+    /** Close [activity]'s card, as back or the recent apps do. */
+    private fun close(activity: MainActivity) {
+        val controller = controllers.single { it.get() === activity }
+        activity.finish()
+        controller.pause().stop().destroy()
+        controllers.remove(controller)
     }
 
     private fun MainActivity.origin(): String = binding!!.let { Origins.origin(it.label, it.port) }
@@ -59,14 +68,12 @@ class DownloadWiringTest {
     }
 
     @Test
-    fun `the bridge is offered to the running endpoint's origin, and moves with a switch`() {
-        harness.seed("ticket-alpha", "ticket-beta", selected = 0)
-        val activity = launch()
-        val alpha = activity.origin()
-        activity.selectEndpoint(1)
-        val beta = activity.origin()
+    fun `each card offers the bridge to its own origin`() {
+        harness.seed("ticket-alpha", "ticket-beta")
+        val alpha = launch(harness.cardOf("ticket-alpha")).origin()
+        val beta = launch(harness.cardOf("ticket-beta")).origin()
 
-        assertEquals(listOf("install:$alpha", "uninstall:$alpha", "install:$beta"), installer.events)
+        assertEquals(listOf("install:$alpha", "install:$beta"), installer.events)
     }
 
     @Test
@@ -86,23 +93,23 @@ class DownloadWiringTest {
     }
 
     @Test
-    fun `switching endpoints, a new page and closing the app each discard a file half saved`() {
-        harness.seed("ticket-alpha", "ticket-beta", selected = 0)
-        val activity = launch()
+    fun `a new page, closing the card and removing its endpoint each discard a file half saved`() {
+        harness.seed("ticket-alpha", "ticket-beta")
+        val activity = launch(harness.cardOf("ticket-alpha"))
 
         start("one", 4)
-        activity.selectEndpoint(1)
-        assertEquals("a switch discards it", listOf("one"), target.discarded)
-
-        start("two", 4)
         val webView = activity.findViewById<WebView>(R.id.web_view)
         shadowOf(webView).webViewClient.onPageStarted(webView, Origins.url(activity.binding!!.label, activity.binding!!.port), null)
-        assertEquals("a new page discards it", listOf("one", "two"), target.discarded)
+        assertEquals("a new page discards it", listOf("one"), target.discarded)
 
+        start("two", 4)
+        close(activity)
+        assertEquals("closing the card discards it", listOf("one", "two"), target.discarded)
+
+        val beta = launch(harness.cardOf("ticket-beta"))
         start("three", 4)
-        controller!!.pause().stop().destroy()
-        controller = null
-        assertEquals("closing the app discards it", listOf("one", "two", "three"), target.discarded)
+        beta.removeEndpoint(1)
+        assertEquals("removing its endpoint discards it", listOf("one", "two", "three"), target.discarded)
         assertTrue(target.saved.isEmpty())
     }
 }

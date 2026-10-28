@@ -42,7 +42,7 @@ class WebViewConfigTest {
     }
 
     private fun settings(): WebSettings {
-        val created = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val created = Robolectric.buildActivity(MainActivity::class.java, harness.lastCard()).setup()
         controller = created
         return created.get().findViewById<WebView>(R.id.web_view).settings
     }

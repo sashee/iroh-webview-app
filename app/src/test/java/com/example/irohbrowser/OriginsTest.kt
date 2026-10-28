@@ -137,7 +137,7 @@ class OriginsTest {
 
     // --- which requests may leave the WebView ---
 
-    private val running = ProxyBinding(label, port)
+    private val running = listOf(ProxyBinding(label, port))
 
     @Test
     fun `no other way of naming this device may be requested`() {
@@ -181,7 +181,16 @@ class OriginsTest {
 
     @Test
     fun `with no proxy running, nothing loopback may`() {
-        assertFalse(Origins.mayRequest("http://$label.localhost:$port/", null))
+        assertFalse(Origins.mayRequest("http://$label.localhost:$port/", emptyList()))
+    }
+
+    @Test
+    fun `with several running, each one's origin may, and nothing between them`() {
+        val both = running + ProxyBinding("other", port + 7)
+        assertTrue(Origins.mayRequest("http://$label.localhost:$port/", both))
+        assertTrue(Origins.mayRequest("http://other.localhost:${port + 7}/", both))
+        assertFalse("one's host on the other's port", Origins.mayRequest("http://$label.localhost:${port + 7}/", both))
+        assertFalse(Origins.mayRequest("http://other.localhost:$port/", both))
     }
 
     @Test
@@ -201,7 +210,7 @@ class OriginsTest {
             "nonsense",
             null,
         ).forEach { assertFalse("$it", Origins.mayRequest(it, running)) }
-        assertFalse(Origins.mayRequest("https://example.com/", null))
+        assertFalse(Origins.mayRequest("https://example.com/", emptyList()))
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.example.irohbrowser
 
 import android.content.Context
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The real [ProxyController]: a thin wrapper over the JNI entry points in
@@ -14,6 +15,13 @@ object NativeProxy : ProxyController {
     private const val ERROR_BAD_TICKET = -1
     private const val ERROR_START_FAILED = -2
     private const val ERROR_BAD_ARGUMENT = -3
+
+    /**
+     * What runs on the Rust side, by label, kept here as well: the service
+     * workers' check reads it for every request, and a call across JNI and a
+     * lock each time is more than that needs.
+     */
+    private val bindings = ConcurrentHashMap<String, ProxyBinding>()
 
     fun load() {
         System.loadLibrary("iroh_webview_proxy")
@@ -34,11 +42,14 @@ object NativeProxy : ProxyController {
         val port = nativeStart(ticket)
         return when {
             port > 0 -> {
-                val label = nativeLabel()
+                // Read from the ticket the way the proxy read it: the same label.
+                val label = identify(ticket)?.label
                 if (label.isNullOrBlank()) {
                     ProxyResult.Failed(ProxyError.StartFailed)
                 } else {
-                    ProxyResult.Started(ProxyBinding(label, port))
+                    val binding = ProxyBinding(label, port)
+                    bindings[label] = binding
+                    ProxyResult.Started(binding)
                 }
             }
             port == ERROR_BAD_TICKET || port == ERROR_BAD_ARGUMENT ->
@@ -47,9 +58,12 @@ object NativeProxy : ProxyController {
         }
     }
 
-    override fun stop() {
-        nativeStop()
+    override fun stop(label: String) {
+        nativeStop(label)
+        bindings.remove(label)
     }
+
+    override fun running(): List<ProxyBinding> = bindings.values.toList()
 
     override fun networkBlocked(blocked: Boolean) {
         nativeNetworkBlocked(blocked)
@@ -64,8 +78,7 @@ object NativeProxy : ProxyController {
 
     private external fun nativeInstallContext(context: Context)
     private external fun nativeStart(ticket: String): Int
-    private external fun nativeLabel(): String?
-    private external fun nativeStop()
+    private external fun nativeStop(label: String)
     private external fun nativeIdentity(ticket: String): String?
     private external fun nativeNetworkBlocked(blocked: Boolean)
 }

@@ -1,5 +1,6 @@
 package com.example.irohbrowser
 
+import android.content.Intent
 import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
@@ -26,7 +27,7 @@ import org.robolectric.android.controller.ActivityController
 class ClipboardWiringTest {
 
     private lateinit var harness: TestHarness
-    private var controller: ActivityController<MainActivity>? = null
+    private val controllers = mutableListOf<ActivityController<MainActivity>>()
 
     private val installer get() = harness.clipboardBridge
 
@@ -41,15 +42,23 @@ class ClipboardWiringTest {
 
     @After
     fun tearDown() {
-        controller?.close()
+        controllers.forEach { it.close() }
         AppContainer.install(null)
     }
 
     /** The activity, on screen and focused, as it is when the user taps a page's copy button. */
-    private fun launch(): MainActivity {
-        val created = Robolectric.buildActivity(MainActivity::class.java).setup().windowFocusChanged(true)
-        controller = created
+    private fun launch(card: Intent = harness.lastCard()): MainActivity {
+        val created = Robolectric.buildActivity(MainActivity::class.java, card).setup().windowFocusChanged(true)
+        controllers += created
         return created.get()
+    }
+
+    /** Close [activity]'s card, as back or the recent apps do. */
+    private fun close(activity: MainActivity) {
+        val controller = controllers.single { it.get() === activity }
+        activity.finish()
+        controller.pause().stop().destroy()
+        controllers.remove(controller)
     }
 
     private fun MainActivity.origin(): String = binding!!.let { Origins.origin(it.label, it.port) }
@@ -58,14 +67,12 @@ class ClipboardWiringTest {
         JSONObject(installer.post(JSONObject().put("id", 1).put("text", text).toString()).single())
 
     @Test
-    fun `the bridge is offered to the running endpoint's origin, and moves with a switch`() {
-        harness.seed("ticket-alpha", "ticket-beta", selected = 0)
-        val activity = launch()
-        val alpha = activity.origin()
-        activity.selectEndpoint(1)
-        val beta = activity.origin()
+    fun `each card offers the bridge to its own origin`() {
+        harness.seed("ticket-alpha", "ticket-beta")
+        val alpha = launch(harness.cardOf("ticket-alpha")).origin()
+        val beta = launch(harness.cardOf("ticket-beta")).origin()
 
-        assertEquals(listOf("install:$alpha", "uninstall:$alpha", "install:$beta"), installer.events)
+        assertEquals(listOf("install:$alpha", "install:$beta"), installer.events)
     }
 
     @Test
@@ -79,8 +86,7 @@ class ClipboardWiringTest {
         harness.seed("ticket-alpha")
         val activity = launch()
         val origin = activity.origin()
-        controller!!.pause().stop().destroy()
-        controller = null
+        close(activity)
         assertEquals("uninstall:$origin", installer.events.last())
     }
 
@@ -109,7 +115,7 @@ class ClipboardWiringTest {
     fun `a page cannot copy while the app is not focused`() {
         harness.seed("ticket-alpha")
         launch()
-        controller!!.windowFocusChanged(false)
+        controllers.single().windowFocusChanged(false)
 
         assertEquals("NotAllowedError", copy("hunter2").getJSONObject("error").getString("name"))
         assertNull(clipboard.primaryClip)

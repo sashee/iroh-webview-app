@@ -19,6 +19,7 @@
     <string name="passkey_choose_account">Sign in to %1$s as</string>
     <string name="settings_endpoints">Endpoints</string>
     <string name="settings_open_marker">%1$s · open</string>
+    <string name="settings_here_marker">%1$s · this card</string>
     <string name="settings_unreadable_ticket">Not a ticket the app can read</string>
     <string name="settings_open">Open</string>
     <string name="settings_rename">Rename</string>

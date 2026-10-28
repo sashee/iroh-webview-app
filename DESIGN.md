@@ -83,16 +83,49 @@ suffers.
 Together the label and the port make the whole origin a pure function of the endpoint id, so
 returning to an endpoint returns to exactly the same origin.
 
-Sessions are meant to **persist**: across switching endpoints, and across the app being
-closed. Nothing is cleared on launch or on a switch — the distinct origins already keep the
-jars apart, so clearing would only throw away a session the user still wants. The one place
-anything is forgotten is removing an endpoint, which clears that origin alone
+Sessions are meant to **persist**: across cards, and across the app being closed. Nothing
+is cleared on launch or when a card opens or closes — the distinct origins already keep
+the jars apart, so clearing would only throw away a session the user still wants. The one
+place anything is forgotten is removing an endpoint, which clears that origin alone
 (`SiteData.clear`) and leaves every other endpoint logged in.
 
-Any endpoint can be removed, not just the open one, because its origin can be worked out
-without running it: `ticket::identity` is the same pure label-and-port derivation, called
-through JNI. Removing an endpoint that is not open leaves the open one's proxy and page
-untouched.
+Any endpoint can be removed, from any card, because its origin can be worked out without
+running it: `ticket::identity` is the same pure label-and-port derivation, called through
+JNI. An endpoint open in a card is cleared on the port its proxy runs on, which may be a
+fallback, and its card is closed. The other cards' proxies and pages are untouched.
+
+## Cards
+
+Every endpoint opens in a card of its own: its own task, listed apart in Android's recent
+apps under the endpoint's name, with its own WebView, page and proxy. Music plays in one
+while a password is copied out of another, and moving between them is the system's own —
+the recent apps, or swiping along the gesture bar. Nothing is reloaded on the way.
+
+- A card is a `MainActivity` opened by a document intent (`FLAG_ACTIVITY_NEW_DOCUMENT`)
+  whose data names the endpoint by its label (`EndpointCards`). Android keeps one task per
+  such intent, so opening an endpoint again -- from "Endpoints and passkeys", the playback
+  notification, the launcher -- brings back its card as it was left. Its endpoint is fixed
+  for the card's life. A card whose endpoint is removed stays, with nothing open, until
+  another endpoint is opened from it; a card with nothing on it (that, the entry card, or
+  one whose endpoint would not start) gives way to the endpoint opened from it.
+- The launcher's own task is no card: it opens the card of the endpoint last in front
+  (`Endpoints.selected`), and goes. Were it a card, Android could not tell it from that
+  endpoint's own, and the notification would open a second one.
+- A card's page reaches only its own proxy (`MainActivity.pageCheck`). Closing a card --
+  back on its first page, or swiping it away -- stops its proxy alone; a card Android
+  destroys without closing keeps it, as the screen going off does. The Rust side keeps
+  the running proxies by label (`android.rs`), and a network block closes the
+  connections of every one.
+- Two things are the whole process's, not a card's:
+  - **The service workers.** Their requests come to one client, and do not say whose page
+    they are. They may reach any running proxy (`ProxyController.running`) and nothing else.
+    The client stays installed with no card open, and then refuses everything.
+  - **The media session.** Android shows one: that of the page that last started playing
+    (`MediaPlayback.owner`). A page that only pauses, or only sets metadata, leaves
+    another's alone. Its notification opens that page's card, and only that card's
+    closing, or its page going, ends it.
+- The saved list is shared. A rename or the autoplay switch, changed in one card, reaches
+  another when it is next shown (`onResume`).
 
 Two things have to hold for a session to survive the process dying, and only one of them is
 ours: `CookieManager.flush()` in `onPause` (persistent cookies are written lazily), and the
@@ -124,8 +157,8 @@ cookie and is discarded when the process does, whatever the app does.
   straight from the internet: an image, a font, a beacon, a form post. That host would
   learn the phone's address and what the page is. Three layers stop it, each covering what
   the one before cannot see (`Confinement`):
-  - `Origins.mayRequest` refuses every request that is not the running proxy's origin,
-    with a 403, and logs it to logcat. `data:`, `blob:` and `about:` pass, because
+  - `Origins.mayRequest` refuses every request that is not the origin of the card's own
+    proxy (for service workers, of a running one), with a 403, and logs it to logcat. `data:`, `blob:` and `about:` pass, because
     fetching one sends nothing anywhere. It runs in `shouldInterceptRequest` and the
     service-worker client, which between them see subresources, fetches, forms, frames and
     navigations however they started.
@@ -142,21 +175,22 @@ cookie and is discarded when the process does, whatever the app does.
 
   A page that wants a CDN font or an external login therefore does not get it. The answer
   is to serve it from the far side.
-- **The WebView talks to loopback only at the running proxy's exact origin.** Cookies are
+- **The WebView talks to loopback only at a running proxy's exact origin.** Cookies are
   keyed by host, not port (RFC 6265), and any app can listen on a loopback port that our
   proxy isn't holding. Without this rule, two paths would send an endpoint's session to
   whoever listens there, along with a page on its exact origin that can read its storage:
   - pressing back into an endpoint whose proxy has stopped;
   - a restored page whose port the proxy didn't get back.
 
-  `Origins.mayRequest` is checked on every request, in `shouldInterceptRequest` and in the
-  service-worker client, so it holds however a navigation started. The history is dropped
-  after a switch, and a restored page on the wrong port is replaced by the front page.
+  `Origins.mayRequest` is checked on every request, in `shouldInterceptRequest` (against
+  the card's own proxy) and in the service-worker client (against every running one), so
+  it holds however a navigation started. The history is dropped after a start, and a
+  restored page on the wrong port is replaced by the front page.
   WebSockets don't pass through either hook, and the proxy override lets `*.localhost`
   through on every port. But only a page already loaded from the endpoint can open one.
 - **Four bridges from page JavaScript into the app: passkeys, the clipboard, the media
-  session and downloads.** Each is a `WebMessageListener` that the WebView restricts to the
-  running endpoint's exact origin, and each carries data, not callable methods. The passkey
+  session and downloads.** Each is a `WebMessageListener` that the WebView restricts to its
+  card's endpoint's exact origin, and each carries data, not callable methods. The passkey
   bridge accepts two operations, create and get, and each needs a fingerprint before it
   signs anything (see [Passkeys](#passkeys)). The clipboard bridge accepts text to copy, and
   nothing else (see [Clipboard](#clipboard)). The media session bridge accepts what a page
@@ -206,8 +240,8 @@ in the page: the system downloader cannot fetch it. So the download bridge saves
 - `PageDownloads` takes one file at a time, from the running proxy's origin only, and
   writes it on a background thread, so the page's next piece waits on the disk rather than
   the app's memory: a piece before the last was written ends the file. Every way a file
-  ends unsaved -- too many bytes, too few, the page going away, an endpoint switch, a
-  failed write -- deletes what was written.
+  ends unsaved -- too many bytes, too few, the page going away, its card closing or its
+  endpoint removed, a failed write -- deletes what was written.
 - `MediaStoreDownloads` writes into the Downloads collection, as the system downloader
   does: no permission, pending until finished, so nothing sees half a file. Its type comes
   from its extension, as Downloads adds a second extension to a file whose type disagrees.
@@ -240,8 +274,9 @@ Two things change from `targetSdk` 35 and 36, and both fail quietly if missed:
   it, a field at the bottom of a page is typed into blind.
 - **Back.** From Android 16, back no longer reaches `onBackPressed`. It goes through an
   `OnBackPressedCallback`, which does what back did before: leave the settings or the ticket
-  field, go back in the page's history, or, while something plays, send the app to the
-  background. Anything else goes to the system, as if the callback weren't there.
+  field, go back in the page's history, or, while the card's page plays, send the card to
+  the background. Anything else goes to the system, as if the callback weren't there: the
+  card closes.
 
 ## Passkeys
 
@@ -319,9 +354,9 @@ tunnel's endpoint id, which a web app behind the tunnel does not know. So the se
 **What the bridge exposes.** A page from an arbitrary peer can do two things: raise a
 fingerprint prompt, and, with the user's finger, create or use a passkey for its own host.
 The prompt names the endpoint, so a prompt from the wrong one is visible as such. A page
-cannot reach another endpoint's passkeys. The bridge is installed for one origin and
-withdrawn on every switch, and the RP ID rule and the origin check in `PasskeyBridge` would
-each stop it independently. Other apps on the device do not see the bridge at all: it lives
+cannot reach another endpoint's passkeys. Each card installs the bridge for its own origin
+alone, and the RP ID rule and the origin check in `PasskeyBridge` would each stop it
+independently. Other apps on the device do not see the bridge at all: it lives
 in the WebView, not on the loopback port.
 
 **Limits.**
@@ -390,11 +425,11 @@ is frozen soon after, page and all. So the app relays the page's session to Andr
   notification and nothing else. Being one is what keeps the app, and the page in its
   WebView, running with the screen off. It starts when the page first plays, while the app
   is on screen (Android refuses to start one from the background), and stops when the page
-  says nothing plays, a new page starts, the endpoint is switched, the app is closed or
-  swiped away, or after ten minutes paused. Media session notifications need no
-  notification permission.
+  says nothing plays, a new page starts, its card is closed or swiped away, or after ten
+  minutes paused. Media session notifications need no notification permission. There is
+  one for the app, shown for one card's page (Cards).
 - While something plays, the page's renderer keeps the app's priority when it is off
-  screen (`setRendererPriorityPolicy`), and back on the first page sends the app to the
+  screen (`setRendererPriorityPolicy`), and back on the first page sends the card to the
   background instead of closing it, as a music app does.
 
 **Taps.** A browser lets a page start media only after a tap, and a press on the
@@ -405,8 +440,9 @@ tap", off by default, that sets `mediaPlaybackRequiresUserGesture` to false for 
 worst an endpoint can do with it is start playing on its own, which may stop another app's
 music.
 
-**Limits.** What plays is the page, in the activity's WebView: when the app is closed or
-swiped away, it stops, and so does the session, and the notification cannot resume it. A
+**Limits.** What plays is the page, in its card's WebView: when the card is closed or
+swiped away, it stops, and so does the session, and the notification cannot resume it.
+Two cards' pages can play at once; the session shows the one that started last. A
 page that starts playing on its own while the app is hidden gets no notification.
 Artwork is not relayed.
 

@@ -1,5 +1,6 @@
 package com.example.irohbrowser
 
+import android.content.Intent
 import android.os.Bundle
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -47,8 +48,8 @@ class LoopbackGuardTest {
         AppContainer.install(null)
     }
 
-    private fun launch(saved: Bundle? = null): ActivityController<MainActivity> {
-        val builder = Robolectric.buildActivity(MainActivity::class.java)
+    private fun launch(saved: Bundle? = null, card: Intent = harness.lastCard()): ActivityController<MainActivity> {
+        val builder = Robolectric.buildActivity(MainActivity::class.java, card)
         return (if (saved == null) builder.setup() else builder.setup(saved)).also { controllers += it }
     }
 
@@ -81,16 +82,30 @@ class LoopbackGuardTest {
     }
 
     @Test
-    fun `after a switch, the previous endpoint's origin is refused`() {
+    fun `a card's page reaches its own proxy and not another card's`() {
+        harness.seed("ticket-alpha", "ticket-beta")
+        val alpha = launch(card = harness.cardOf("ticket-alpha")).get()
+        val beta = launch(card = harness.cardOf("ticket-beta")).get()
+
+        assertNotNull(alpha.intercept(beta.origin() + "/"))
+        assertNotNull(beta.intercept(alpha.origin() + "/"))
+        assertNull(beta.intercept(beta.origin() + "/"))
+    }
+
+    @Test
+    fun `a closed card's origin is refused`() {
         // Its proxy has stopped, so its port is free for anyone to take.
-        harness.seed("ticket-alpha", "ticket-beta", selected = 0)
-        val activity = launch().get()
-        val alpha = activity.origin()
+        harness.seed("ticket-alpha", "ticket-beta")
+        val alpha = launch(card = harness.cardOf("ticket-alpha"))
+        val beta = launch(card = harness.cardOf("ticket-beta")).get()
+        val closed = alpha.get().origin()
 
-        activity.selectEndpoint(1)
+        alpha.get().finish()
+        alpha.pause().stop().destroy()
+        controllers.remove(alpha)
 
-        assertNotNull(activity.intercept("$alpha/"))
-        assertNull(activity.intercept(activity.origin() + "/"))
+        assertNotNull(harness.serviceWorkers.check!!("$closed/"))
+        assertNotNull(beta.intercept("$closed/"))
     }
 
     @Test
@@ -124,29 +139,46 @@ class LoopbackGuardTest {
     }
 
     @Test
-    fun `the service worker route is removed with the activity`() {
-        harness.seed("ticket-alpha")
-        val controller = launch()
-        controller.pause().stop().destroy()
-        controllers.remove(controller)
-        assertNull(harness.serviceWorkers.check)
+    fun `service workers, which are the whole app's, reach every card's proxy and nothing else`() {
+        harness.seed("ticket-alpha", "ticket-beta")
+        val alpha = launch(card = harness.cardOf("ticket-alpha")).get()
+        val beta = launch(card = harness.cardOf("ticket-beta")).get()
+        val check = harness.serviceWorkers.check!!
+
+        assertNull(check(alpha.origin() + "/sw.js"))
+        assertNull(check(beta.origin() + "/sw.js"))
+        assertNotNull(check(Origins.origin(alpha.binding!!.label, beta.binding!!.port) + "/"))
+        assertNotNull(check("http://127.0.0.1:${alpha.binding!!.port}/"))
     }
 
-    // --- history after a switch ---
+    @Test
+    fun `the service worker check outlives the cards, and then refuses everything`() {
+        // Removing it would let them reach anything.
+        harness.seed("ticket-alpha")
+        val controller = launch()
+        val origin = controller.get().origin()
+        controller.get().finish()
+        controller.pause().stop().destroy()
+        controllers.remove(controller)
+
+        val check = harness.serviceWorkers.check!!
+        assertNotNull(check("$origin/sw.js"))
+    }
+
+    // --- history after a start ---
 
     @Test
-    fun `switching drops the history once the new endpoint's page has loaded`() {
-        harness.seed("ticket-alpha", "ticket-beta", selected = 0)
+    fun `a start drops the history once the endpoint's page has loaded`() {
+        harness.seed("ticket-alpha")
         val activity = launch().get()
-        val alpha = activity.origin()
-        activity.selectEndpoint(1)
-        val beta = activity.origin()
+        val binding = activity.binding!!
 
-        // A late callback for the page being left must not count.
-        activity.client().onPageFinished(activity.webView(), "$alpha/")
+        // A late callback for a page left behind -- this endpoint on the port
+        // it had before -- must not count.
+        activity.client().onPageFinished(activity.webView(), Origins.origin(binding.label, binding.port - 1) + "/")
         assertFalse(shadowOf(activity.webView()).wasClearHistoryCalled())
 
-        activity.client().onPageFinished(activity.webView(), "$beta/")
+        activity.client().onPageFinished(activity.webView(), activity.origin() + "/")
         assertTrue(shadowOf(activity.webView()).wasClearHistoryCalled())
     }
 
@@ -170,7 +202,7 @@ class LoopbackGuardTest {
         harness.proxy.bindPreferredPorts = true
         harness.seed("ticket-alpha")
         val saved = savedAfterBrowsingTo("/deep/page")
-        val builder = Robolectric.buildActivity(MainActivity::class.java)
+        val builder = Robolectric.buildActivity(MainActivity::class.java, harness.lastCard())
         fun history() = builder.get().findViewById<WebView>(R.id.web_view).copyBackForwardList().size
         val seen = mutableListOf<String>()
         harness.proxy.onStart = { seen += "start with ${history()} pages" }
