@@ -220,7 +220,28 @@ its server could already send any file to Downloads through the system downloade
 
 An upload uses `WebChromeClient.onShowFileChooser` into `OpenMultipleDocuments`. The only
 subtlety is that a pending `ValueCallback` must always be answered — with null on
-cancellation or teardown — or the page's file input stays disabled for good.
+cancellation or teardown — or the page's file input stays disabled for good. A folder
+comes as `FileChooserParams.MODE_OPEN_FOLDER`, and goes to `OpenDocumentTree`; the WebView
+is handed the folder, whose files it then reads itself. Android 17's WebView (155) sends that
+mode for a page's `showDirectoryPicker()` alone, and only to apps targeting 37: the File
+System Access API is off unless the compat change `ENABLE_FILE_SYSTEM_ACCESS` (enabled from
+`targetSdk` 37) is on, and a page's `<input webkitdirectory>` always comes as
+`MODE_OPEN_MULTIPLE`, a file picker. Both were read off the WebView's bytecode
+(`runFileChooser`) and `dumpsys platform_compat`, so a page that wants folders here calls
+`showDirectoryPicker()` (media-store does, in the app).
+
+## The window and back
+
+Two things change from `targetSdk` 35 and 36, and both fail quietly if missed:
+
+- **Edge to edge.** From Android 15 the window is drawn under the status and navigation
+  bars, a display cutout, and the keyboard. `MainActivity.keepClearOfSystemBars` pads the
+  root view by all of them. The keyboard's part is what used to resize the page for it: without
+  it, a field at the bottom of a page is typed into blind.
+- **Back.** From Android 16, back no longer reaches `onBackPressed`. It goes through an
+  `OnBackPressedCallback`, which does what back did before: leave the settings or the ticket
+  field, go back in the page's history, or, while something plays, send the app to the
+  background. Anything else goes to the system, as if the callback weren't there.
 
 ## Passkeys
 
@@ -452,10 +473,26 @@ plumbing (`init_hosted`, an extra Gradle artifact).
 
 `nix-build` is the whole gate, and CI runs exactly it. Four stages, all offline:
 
-`minSdk` and `targetSdk` are both 34: the only device this targets runs Android 17, and
-matching them leaves one platform's behaviour to reason about. It also means downloads need
-no storage permission (scoped storage, from API 29) and Robolectric needs one runtime jar
-rather than two.
+The only device this targets runs Android 17. `minSdk` is 34, so downloads need no
+storage permission (scoped storage, from API 29). `targetSdk` is 37, the level Android 17's
+WebView asks of an app before it gives pages the File System Access API, their only way to
+pick a folder here (see [Downloads and uploads](#downloads-and-uploads)); on the way it brings
+Android 15's edge-to-edge window and Android 16's back handling (see
+[The window and back](#the-window-and-back)). Of the 38 platform changes enabled from 37
+(`dumpsys platform_compat`), the others don't touch this app: it has no Java TLS, sockets or
+SQLite, and `RESTRICT_LOCAL_NETWORK`, which would cut the direct path to a peer on the LAN,
+isn't tied to a target yet. `compileSdk` is 37. Robolectric runs the tests on `targetSdk`
+alone, so it needs one runtime jar, and that jar needs JDK 21: the build runs on 21, while
+the app's bytecode targets 17.
+
+The toolchain comes from one place, `nix/android.nix`, which both `default.nix` and
+`shell.nix` use: the SDK (platform 37.0, build tools 37.0.0), Gradle 9, the JDK, and
+Robolectric's runtime jar. The shell is where the lockfiles are regenerated, so the two
+must resolve exactly the same dependencies. The Android Gradle plugin is 9, which compiles
+Kotlin itself (built-in Kotlin): the Kotlin plugin is never applied, and is named in the
+root build file with `apply false` only to choose its version over the older one the
+Android plugin depends on. The Android plugin's own `aapt2` comes from Maven linked for a
+usual Linux, so the build points it at the SDK's.
 
 1. **`-A rust`** — the proxy crate's tests on the host, via `buildRustPackage` with
    `cargoLock.lockFile` and a vendored crate directory.

@@ -15,7 +15,15 @@ each connection over iroh; a thin Kotlin shell points a WebView at it. Built wit
 - Do **not** run `gradle` in `nix-shell` for a full offline build — dependency resolution
   needs the vendored Maven repo and init script that `default.nix` wires up. `nix-shell` +
   `gradle` is for regenerating `app/gradle.lockfile` and `gradle/verification-metadata.xml`
-  after a dependency change, and that needs network.
+  after a dependency change, and that needs network. Delete `verification-metadata.xml`
+  first, and use an empty `GRADLE_USER_HOME`: Gradle only adds to the file, so old entries
+  stay; and on a warm cache it leaves out the parent POMs and BOMs it doesn't read again,
+  which the offline repository needs (a warm run once dropped 8 of 374).
+- The vendored repo (`mkM2Repository`) fetches each artifact from the folder of the version
+  Gradle recorded. An artifact whose module metadata puts it in another version's folder
+  is a 404 there, and fails `nix-build` long after Gradle in the shell was happy. Guava's
+  `-jre` releases do this with their Android jar; `app/build.gradle.kts` asks the unit
+  tests for the `-android` release by name instead.
 - The release signature is deterministic (keystore in `signing/`), so `adb install -r`
   preserves on-device data.
 - Pages can use passkeys backed by the phone's secure hardware. The app emulates WebAuthn
@@ -85,6 +93,17 @@ binary message and any page can post one. For the passkey one:
 - `PasskeyAuthenticatorTest` asserts "no prompt" for each refusal. Keep those assertions
   when adding one.
 - Never use `addJavascriptInterface`. `WebViewConfigTest` checks the bytecode.
+
+**Android 16 no longer calls `onBackPressed`.** From `targetSdk` 36, back reaches the
+activity only through `onBackPressedDispatcher`; an override of `onBackPressed` compiles,
+and is never called. `MainActivity.goBack` is where back is decided. The window is also
+drawn edge to edge, under the system bars and the keyboard: anything new on screen goes
+inside the root view, which `keepClearOfSystemBars` pads.
+
+**Robolectric needs JDK 21 for the tests' SDK.** It runs Android 16 only on 21 or later,
+and says so as an `UnsupportedClassVersionError`. `nix/android.nix` picks the JDK, the SDK,
+Gradle and Robolectric's runtime jar for both the build and the shell; a new `targetSdk`
+needs a new jar there (its name is in Robolectric's `DefaultSdkProvider`).
 
 **`addDocumentStartJavaScript` only reaches documents that start after it.** That is why
 `openSelected` offers the bridges before `loadUrl`. Their scripts and listeners are

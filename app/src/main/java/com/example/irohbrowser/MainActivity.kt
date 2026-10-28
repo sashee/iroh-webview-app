@@ -23,9 +23,12 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import java.io.ByteArrayInputStream
 
 /**
@@ -77,6 +80,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingFileChooser: ValueCallback<Array<Uri>>? = null
 
     private lateinit var fileChooser: ActivityResultLauncher<Array<String>>
+    private lateinit var folderChooser: ActivityResultLauncher<Uri?>
 
     private lateinit var passkeys: PasskeyBridge
     private lateinit var downloads: PageDownloads
@@ -96,6 +100,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        keepClearOfSystemBars()
 
         container = AppContainer.get(this)
         webView = findViewById(R.id.web_view)
@@ -121,6 +126,23 @@ class MainActivity : AppCompatActivity() {
             pendingFileChooser?.onReceiveValue(uris.orEmpty().toTypedArray())
             pendingFileChooser = null
         }
+        // A folder, for a page's showDirectoryPicker(): the WebView is handed
+        // the folder, and reads the files in it itself.
+        folderChooser = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { folder ->
+            pendingFileChooser?.onReceiveValue(folder?.let { arrayOf(it) })
+            pendingFileChooser = null
+        }
+        // From Android 16 on, back no longer reaches onBackPressed: it comes
+        // through the dispatcher, to this.
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (goBack()) return
+                // Not ours: what the system does, as if this weren't here.
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+                isEnabled = true
+            }
+        })
 
         configureWebView()
         findViewById<Button>(R.id.connect_button).setOnClickListener {
@@ -224,6 +246,13 @@ class MainActivity : AppCompatActivity() {
                 // answered or its input stays disabled forever.
                 pendingFileChooser?.onReceiveValue(null)
                 pendingFileChooser = filePathCallback
+                // Android 17's WebView asks for a folder for a page's
+                // showDirectoryPicker() -- only from apps targeting 37, which
+                // get the File System Access API. A folder input it takes for
+                // one picking files, whatever the app targets.
+                if (params?.mode == FileChooserParams.MODE_OPEN_FOLDER) {
+                    return runCatching { folderChooser.launch(null) }.isSuccess
+                }
                 val types = params?.acceptTypes
                     ?.filter { it.isNotBlank() }
                     ?.toTypedArray()
@@ -625,7 +654,8 @@ class MainActivity : AppCompatActivity() {
         else -> super.onOptionsItemSelected(item)
     }
 
-    override fun onBackPressed() {
+    /** Back, where it means something here. False leaves it to the system. */
+    private fun goBack(): Boolean {
         when {
             settings.visibility == android.view.View.VISIBLE -> leaveSettings()
             // The ticket field, reached from "Add endpoint" while one is open.
@@ -634,10 +664,23 @@ class MainActivity : AppCompatActivity() {
             // Leaving would close the page, and stop what it plays: go to the
             // background instead, as a music app does.
             container.media.active -> moveTaskToBack(true)
-            else -> {
-                @Suppress("DEPRECATION")
-                super.onBackPressed()
-            }
+            else -> return false
+        }
+        return true
+    }
+
+    /**
+     * From Android 15 on, the window is drawn edge to edge: under the status
+     * and navigation bars, a display cutout, and the keyboard. The views are
+     * kept clear of all of them -- the keyboard's part is what used to resize
+     * the page for it.
+     */
+    private fun keepClearOfSystemBars() {
+        val covered = WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime()
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.root)) { view, insets ->
+            val clear = insets.getInsets(covered)
+            view.setPadding(clear.left, clear.top, clear.right, clear.bottom)
+            WindowInsetsCompat.CONSUMED
         }
     }
 

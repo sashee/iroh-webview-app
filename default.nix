@@ -39,28 +39,8 @@ let
     inherit fetchArtifact;
   };
 
-  android = pkgs.androidenv.composeAndroidPackages {
-    platformVersions = [ "34" ];
-    buildToolsVersions = [ "34.0.0" ];
-    abiVersions = [ "arm64-v8a" "x86_64" ];
-    includeEmulator = false;
-    includeNDK = false;
-  };
-  androidSdk = android.androidsdk;
-  buildTools = "${androidSdk}/libexec/android-sdk/build-tools/34.0.0";
-
-  # Robolectric resolves its Android runtime jar outside normal Gradle
-  # dependency resolution, so it and the generated robolectric-deps.properties
-  # mapping must be provided explicitly rather than through
-  # verification-metadata.xml or the offline Maven repo. One jar, because
-  # minSdk and targetSdk are both 34.
-  robolectricSdk34Jar = pkgs.fetchurl {
-    url = "https://repo1.maven.org/maven2/org/robolectric/android-all-instrumented/14-robolectric-10818077-i4/android-all-instrumented-14-robolectric-10818077-i4.jar";
-    hash = "sha256-o2O7AQo+geXEW5NwILOV9NsPsA1bxqpEx7WvxNFcnIk=";
-  };
-  robolectricDepsProperties = pkgs.writeText "robolectric-deps.properties" ''
-    org.robolectric\:android-all-instrumented\:14-robolectric-10818077-i4=${robolectricSdk34Jar}
-  '';
+  # The SDK, Gradle, the JDK and Robolectric's runtime jar, as shell.nix has them.
+  android = import ./nix/android.nix { inherit pkgs; };
 
   offlineRepository = mkM2Repository {
     pname = "iroh-webview-app";
@@ -109,21 +89,21 @@ pkgs.stdenv.mkDerivation {
   allowSubstitutes = false;
 
   nativeBuildInputs = [
-    pkgs.gradle
-    pkgs.jdk17
-    androidSdk
+    android.gradle
+    android.jdk
+    android.sdk
   ];
 
   buildPhase = ''
-    export JAVA_HOME=${pkgs.jdk17}
-    export ANDROID_SDK_ROOT=${androidSdk}/libexec/android-sdk
+    export JAVA_HOME=${android.jdk}
+    export ANDROID_SDK_ROOT=${android.sdk}/libexec/android-sdk
     export ANDROID_HOME=$ANDROID_SDK_ROOT
     export SIGNING_STORE_FILE=$PWD/signing/app.jks
     export SIGNING_STORE_PASSWORD=changeme
     export SIGNING_KEY_ALIAS=app
     export SIGNING_KEY_PASSWORD=changeme
     export MAVEN_SOURCE_REPOSITORY=${offlineRepository.m2Repository}
-    export ROBOLECTRIC_DEPS_PROPERTIES=${robolectricDepsProperties}
+    export ROBOLECTRIC_DEPS_PROPERTIES=${android.robolectricDepsProperties}
     export JNI_LIBS_DIR=${nativeLibs}
     # Named only to make the Rust suite a build dependency of the APK: a
     # library whose own tests fail should not reach a phone. Nothing reads it.
@@ -131,7 +111,7 @@ pkgs.stdenv.mkDerivation {
     export PAGE_SCRIPT_TESTS_PASSED=${pageScripts}
     mkdir -p .gradle-home
     export GRADLE_USER_HOME=$PWD/.gradle-home
-    gradle --offline --no-daemon --init-script ${./nix/offline-init.gradle.kts} -Dorg.gradle.project.android.aapt2FromMavenOverride=${buildTools}/aapt2 testDebugUnitTest assembleRelease
+    gradle --offline --no-daemon --init-script ${./nix/offline-init.gradle.kts} -Dorg.gradle.project.android.aapt2FromMavenOverride=${android.aapt2} testDebugUnitTest assembleRelease
   '';
 
   installPhase = ''

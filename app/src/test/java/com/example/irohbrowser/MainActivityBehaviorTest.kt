@@ -309,7 +309,7 @@ class MainActivityBehaviorTest {
         harness.seed("ticket-alpha")
         val activity = launch()
         val application = ApplicationProvider.getApplicationContext<android.app.Application>()
-        while (shadowOf(application).nextStartedActivity != null) Unit
+        while (shadowOf(application).nextStartedActivity != null) {}
 
         assertTrue(activity.navigate("https://example.com/?stolen=1", tapped = false))
 
@@ -322,7 +322,7 @@ class MainActivityBehaviorTest {
         val activity = launch()
         val application = ApplicationProvider.getApplicationContext<android.app.Application>()
         // Drain anything the launch itself queued.
-        while (shadowOf(application).nextStartedActivity != null) Unit
+        while (shadowOf(application).nextStartedActivity != null) {}
 
         assertTrue(activity.navigate("intent://evil#Intent;scheme=http;end", tapped = true))
 

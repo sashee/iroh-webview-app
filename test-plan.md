@@ -416,6 +416,14 @@ code under test.
   page giving up, the page going away (also while the file is still being made), a file
   that cannot be made, a write that fails
 
+### A page's file inputs — `FileChooserTest`
+
+- a file input opens the document picker, for several files of the types it accepts
+  (blank types dropped), and the page gets every file picked
+- a folder input (`MODE_OPEN_FOLDER`) opens the folder picker, and the page gets the folder
+- a pick cancelled, or superseded by another, answers the page with nothing; so does
+  closing the app while a page waits — an unanswered input stays disabled for good
+
 ### Where the download bridge is offered — `DownloadWiringTest`
 
 - to the running endpoint's exact origin, moved on a switch
@@ -559,6 +567,10 @@ In Node, against fake links, fake `blob:` URLs and an app that answers as
 - **The platform half of playback** has no automated tests: Android's `MediaSession`, the
   notification, the foreground service, and the renderer priority. `Playback.kt` is kept
   thin for that reason; README.md's playback checks cover it.
+- **The window and back** from `targetSdk` 35 and 36: whether anything is drawn under the system
+  bars or the keyboard, and the system delivering back to the dispatcher, are the
+  platform's. The tests drive back through `onBackPressed`, which reaches the same callback;
+  README.md's checks cover the rest.
 - **The platform half of downloads** has no automated tests: the Downloads collection
   (`MediaStoreDownloads.kt`, kept thin), and the WebView delivering an `ArrayBuffer`.
   README.md's download checks cover it.

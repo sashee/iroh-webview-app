@@ -1,6 +1,5 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 // The cdylibs are cross-compiled by Nix (nix/native-libs.nix) and handed over as
@@ -16,7 +15,9 @@ val signingKeyPassword = providers.environmentVariable("SIGNING_KEY_PASSWORD")
 
 android {
     namespace = "com.example.irohbrowser"
-    compileSdk = 34
+    // The SDK nix/android.nix provides: platform 37.0, build tools 37.0.0.
+    compileSdk = 37
+    buildToolsVersion = "37.0.0"
 
     signingConfigs {
         create("release") {
@@ -34,12 +35,16 @@ android {
 
     defaultConfig {
         applicationId = "com.example.irohbrowser"
-        // The only device this targets runs Android 17. Matching compileSdk
-        // keeps one platform's behaviour to reason about, and buys two things
-        // concretely: no WRITE_EXTERNAL_STORAGE for downloads (scoped storage
-        // from 29), and one Robolectric runtime jar instead of two.
+        // The only device this targets runs Android 17. minSdk 34 keeps
+        // downloads free of WRITE_EXTERNAL_STORAGE (scoped storage from 29).
+        // targetSdk 37 is what Android 17's WebView asks of an app before it
+        // gives pages the File System Access API, the only way they pick a
+        // folder (ENABLE_FILE_SYSTEM_ACCESS); from 35 and 36 on, the window is
+        // also drawn edge to edge and back goes through the dispatcher
+        // (MainActivity). Robolectric runs the tests on targetSdk alone: one
+        // runtime jar (nix/android.nix).
         minSdk = 34
-        targetSdk = 34
+        targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
 
@@ -64,13 +69,12 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.all {
+            // Robolectric's Android 16 sets up shared memory through a JDK
+            // internal, which JDK 21 keeps closed unless the test JVM opens it.
+            it.jvmArgs("--add-opens=java.base/jdk.internal.access=ALL-UNNAMED")
             val robolectricDepsFile = System.getenv("ROBOLECTRIC_DEPS_PROPERTIES")
             if (!robolectricDepsFile.isNullOrBlank()) {
                 it.systemProperty("robolectric-deps.properties", robolectricDepsFile)
@@ -79,9 +83,7 @@ android {
     }
 
     sourceSets.named("main") {
-        jniLibs.srcDirs(
-            jniLibsDir.orNull ?: error("JNI_LIBS_DIR must be set by the Nix build environment"),
-        )
+        jniLibs.directories += jniLibsDir.orNull ?: error("JNI_LIBS_DIR must be set by the Nix build environment")
     }
 
     packaging {
@@ -109,16 +111,33 @@ android {
     }
 }
 
-dependencies {
-    implementation("androidx.activity:activity-ktx:1.8.2")
-    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.webkit:webkit:1.10.0")
-    implementation("com.google.android.material:material:1.11.0")
+// Guava's -jre release (Robolectric's) files its Android jar under the -android
+// release's folder, which its Gradle module metadata points to. The offline
+// repository (mkM2Repository) looks under the version Gradle recorded, and finds
+// nothing. Asking the unit tests for the -android release by name, which is what
+// they get anyway, keeps the jar in its own folder.
+configurations.configureEach {
+    if ("UnitTest" in name) {
+        resolutionStrategy.eachDependency {
+            val version = requested.version
+            if (requested.group == "com.google.guava" && requested.name == "guava" && version != null && version.endsWith("-jre")) {
+                useVersion(version.removeSuffix("-jre") + "-android")
+                because("the offline repository can't follow the -jre release's metadata to the -android jar")
+            }
+        }
+    }
+}
 
-    testImplementation("androidx.test:core:1.5.0")
+dependencies {
+    implementation("androidx.activity:activity-ktx:1.13.0")
+    implementation("androidx.appcompat:appcompat:1.8.0")
+    implementation("androidx.core:core-ktx:1.19.1")
+    implementation("androidx.webkit:webkit:1.18.0")
+    implementation("com.google.android.material:material:1.14.0")
+
+    testImplementation("androidx.test:core:1.7.0")
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.11.1")
+    testImplementation("org.robolectric:robolectric:4.17")
     // Plays the server in PasskeyAuthenticatorTest: an independent WebAuthn
     // implementation, so the passkeys the app produces are checked by code
     // that did not produce them.

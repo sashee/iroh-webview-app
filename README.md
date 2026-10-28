@@ -35,8 +35,12 @@ nix-build -A pageScripts   # the injected page scripts' tests, in Node
 already set — use it to regenerate the lockfiles after a dependency change:
 
 ```sh
-nix-shell --run 'gradle --write-locks --write-verification-metadata sha256 testDebugUnitTest assembleRelease'
+rm gradle/verification-metadata.xml
+nix-shell --run 'GRADLE_USER_HOME=$(mktemp -d) gradle --write-locks --write-verification-metadata sha256 testDebugUnitTest assembleRelease'
 ```
+
+Deleting the file and starting from an empty Gradle home matter: Gradle only adds to the
+file, and on a warm cache it leaves out the parent POMs and BOMs the offline build needs.
 
 That step needs network. `nix-build` itself does not: Gradle resolves from a vendored
 Maven repository and Cargo from a vendored crate directory.
@@ -101,12 +105,12 @@ explanation, so logcat is the only place the reason exists.
   to do to use them.
 - **No HTTP parsing.** The proxy copies bytes. Chunked encoding, `Range`, `Set-Cookie`,
   redirects and keep-alive work because nothing here is a participant in them.
-- **No JavaScript interface.** The page comes from an arbitrary peer. Its three channels
-  into the app are for passkeys, for copying text marked sensitive, and for showing what
-  it plays. All are restricted to the endpoint's own origin and carry data, not methods.
+- **No JavaScript interface.** The page comes from an arbitrary peer. Its four channels
+  into the app are for passkeys, for copying text marked sensitive, for showing what it
+  plays, and for saving the files it holds. All are restricted to the endpoint's own origin and carry data, not methods.
   `addJavascriptInterface` is never used, as `WebViewConfigTest` asserts.
 
-`minSdk` is 34 — this targets one Pixel 6a, not the world.
+`minSdk` is 34 and `targetSdk` 37 — this targets one Pixel 6a, not the world.
 
 ## On-device checks
 
@@ -265,3 +269,19 @@ These need a page behind the endpoint that saves files it holds, through a link 
     irohbrowser:V` shows `an answer has been owed for …` with each path's QUIC stats, and
     within about half a minute `closing the connection for …, stuck:`, after which the
     request goes through again on a fresh connection.
+
+### The window, back and folders
+
+These follow from `targetSdk` 37 (DESIGN.md, The window and back; Downloads and uploads).
+
+38. Nothing on the page, the settings screen or the ticket field is under the status bar,
+    the navigation bar or the gesture handle; the app bar sits below the status bar.
+    media-store's player bar is fully above the navigation bar.
+39. Tap a field near the bottom of a page: the keyboard pushes the page up, and the field
+    stays in view while typing.
+40. Back, in turn: from the settings screen it returns to the page; on a page with history
+    it goes back in it; on the first page while something plays the app goes to the
+    background and keeps playing; with nothing playing it leaves the app.
+41. In media-store's Add music, Or a folder → Choose Folder: the system's folder picker
+    opens, and the preview lists the folder's files under the folder's name, its subfolders
+    kept.

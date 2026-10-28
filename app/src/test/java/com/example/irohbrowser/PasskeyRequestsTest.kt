@@ -156,7 +156,7 @@ class PasskeyRequestsTest {
     fun `PRF inputs are read, both of them`() {
         val prf = get("""{"challenge": "AQ", "extensions": {"prf": {"eval": {"first": "AQI", "second": "AwQ"}}}}""").value().prf!!
         assertArrayEquals(byteArrayOf(1, 2), prf.eval!!.first)
-        assertArrayEquals(byteArrayOf(3, 4), prf.eval!!.second)
+        assertArrayEquals(byteArrayOf(3, 4), prf.eval.second)
     }
 
     @Test

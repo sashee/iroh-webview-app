@@ -1,7 +1,7 @@
 let
   pinnedNixpkgs = builtins.fetchTarball {
-    url = "https://github.com/NixOS/nixpkgs/archive/bcd464ccd2a1a7cd09aa2f8d4ffba83b761b1d0e.tar.gz";
-    sha256 = "1424cs8r44zfj6jrl02spym937164qg0cs7rryvdzb6jggrk2xkp";
+    url = "https://github.com/NixOS/nixpkgs/archive/3ec636362e1816bc2f0888fa0fa2c69f1bc9e504.tar.gz";
+    sha256 = "177diqkiwphjyqpk2n6nisayx840x28ksvq99kkyi2xsn37fp4md";
   };
 in
 import pinnedNixpkgs {

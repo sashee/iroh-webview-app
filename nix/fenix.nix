@@ -9,6 +9,6 @@
 # moving target, so the content hash starts failing the moment upstream pushes,
 # and the build breaks for a reason that has nothing to do with this repo.
 import (builtins.fetchTarball {
-  url = "https://github.com/nix-community/fenix/archive/d57340fe40c2ee12f86c0e087d2239d682b54eb0.tar.gz";
-  sha256 = "1yrii22ws5f0giaz4y6d705k2f4qziiviv0wnsfpf5jaw87srdnz";
+  url = "https://github.com/nix-community/fenix/archive/dec0a3fee20fbe567c75362e1a527387b3d4a2c3.tar.gz";
+  sha256 = "0mlzjir7h076m3s14bq5by385zsy1ayi6y59kj2zzdsf61gvj4nk";
 })
